@@ -108,6 +108,17 @@ namespace JndUfo
         public float CurrentStimulusValue =>
             _practiceMode ? _practiceStutterMs : (_staircase?.CurrentValue ?? 0f);
 
+        /// <summary>
+        /// The stimulus that was actually on screen for the trial being scored, latched at
+        /// the top of <see cref="ReportShotResult"/>.
+        ///
+        /// This is the one to log against a response. <see cref="CurrentStimulusValue"/> is
+        /// live, and RecordResponse advances it to the next trial's stimulus as part of
+        /// folding in the answer — so reading it after the fact yields the stimulus the
+        /// participant has not seen yet.
+        /// </summary>
+        public float PresentedStimulusMs { get; private set; }
+
         /// <summary>True while warm-up shots are being played. Stutters use a fixed size and
         /// responses are discarded rather than fed to the staircase.</summary>
         public bool PracticeMode => _practiceMode;
@@ -560,6 +571,12 @@ namespace JndUfo
         /// </summary>
         public void ReportShotResult(bool isHit)
         {
+            // Captured before anything below can advance the staircase. RecordResponse
+            // folds in the response AND immediately selects the next stimulus, so by the
+            // time the director logs the trial, CurrentStimulusValue is already the NEXT
+            // one — logging that would pair every response with the wrong stimulus.
+            PresentedStimulusMs = CurrentStimulusValue;
+
             // Practice shots are warm-up only — they must never inform the posterior.
             if (_practiceMode) return;
             if (_staircase == null || !useStaircase) return;

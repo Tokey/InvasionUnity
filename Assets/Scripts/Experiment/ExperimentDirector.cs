@@ -35,6 +35,25 @@ namespace JndUfo
         [Tooltip("Close the application once the session log is written. Turn off to leave the " +
                  "end screen up (useful while piloting in the Editor).")]
         public bool quitOnSessionComplete = true;
+
+        [Header("Post-Session Database")]
+        [Tooltip("After the logs are closed, run the script below to build a SQLite database " +
+                 "from them. Requires Python on this machine. The CSVs are written either way — " +
+                 "if this fails it only logs a warning, and the database can be rebuilt by " +
+                 "running Analysis/build_db.py by hand.")]
+        public bool buildDatabaseOnFinish = true;
+
+        [Tooltip("Python command. 'python' uses whatever is on PATH; an absolute path to " +
+                 "python.exe avoids depending on PATH at all.")]
+        public string pythonExecutable = "python";
+
+        [Tooltip("Script to run, relative to the project root in the Editor or to the folder " +
+                 "holding the .exe in a build. An absolute path is used as-is.")]
+        public string databaseScriptPath = "Analysis/build_db.py";
+
+        [Tooltip("How long the closing screen waits for the database build before quitting " +
+                 "anyway. The build keeps running after quit if it needs longer.")]
+        public float databaseWaitSec = 20f;
         [Tooltip("Fallback length used only if the staircase is off AND maxDurationSec is 0, " +
                  "which would otherwise leave the session with no way to end.")]
         public float fallbackDurationSec = 300f;
@@ -195,7 +214,13 @@ namespace JndUfo
             Debug.Log($"[ExperimentDirector] Session {SessionId} complete — " +
                       $"{_blocks.Count} block(s). Logs in {_logger.Directory}");
 
-            yield return ThankYouAndQuit();
+            // Only after Dispose: the CSVs have to be flushed and closed before anything
+            // reads them. Started, not waited on — the countdown runs over the top of it.
+            System.Diagnostics.Process dbBuild = buildDatabaseOnFinish
+                ? PostSessionHook.Launch(pythonExecutable, databaseScriptPath)
+                : null;
+
+            yield return ThankYouAndQuit(dbBuild);
         }
 
         IEnumerator RunBlock(int index)
@@ -384,7 +409,7 @@ namespace JndUfo
         /// flushed by the time this runs, so quitting here — or the participant force-quitting
         /// during it — cannot lose data.
         /// </summary>
-        IEnumerator ThankYouAndQuit()
+        IEnumerator ThankYouAndQuit(System.Diagnostics.Process dbBuild = null)
         {
             int shownSecond = -1;
             for (float remaining = thankYouCountdownSec; remaining > 0f; remaining -= Time.unscaledDeltaTime)
@@ -403,6 +428,25 @@ namespace JndUfo
             {
                 overlay.Show("Thank you for participating", "That's the end of the study.");
                 yield break;
+            }
+
+            // Give the database build a bounded moment to land before the app goes away.
+            // Never an unbounded wait: the CSVs are the data and the database can be
+            // rebuilt by hand, so a slow or wedged import must not strand the session on
+            // a "closing" screen.
+            if (dbBuild != null && !dbBuild.HasExited)
+            {
+                overlay.Show("Thank you for participating", "Saving…");
+                float deadline = Time.unscaledTime + databaseWaitSec;
+                while (!dbBuild.HasExited && Time.unscaledTime < deadline)
+                    yield return null;
+
+                if (dbBuild.HasExited)
+                    Debug.Log($"[PostSessionHook] Database build finished (exit {dbBuild.ExitCode}).");
+                else
+                    Debug.LogWarning("[PostSessionHook] Database build did not finish within " +
+                                     $"{databaseWaitSec:0.#}s; it keeps running after quit, or " +
+                                     "re-run Analysis/build_db.py by hand.");
             }
 
             overlay.Show("Thank you for participating", "Closing…");
@@ -514,7 +558,9 @@ namespace JndUfo
                 timeSinceStartSec    = now,
                 timeSinceLastShotSec = now - _lastShotTime,
 
-                stimulusMs          = perturbation != null ? perturbation.CurrentStimulusValue : 0f,
+                // PresentedStimulusMs, not CurrentStimulusValue: by now the staircase has
+                // already advanced to the next trial's stimulus.
+                stimulusMs          = perturbation != null ? perturbation.PresentedStimulusMs : 0f,
                 spikesSinceLastShot = spikes - _spikeCountAtLastShot,
 
                 stuttersMs    = burst.listMs,

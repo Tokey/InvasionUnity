@@ -14,8 +14,11 @@ namespace JndUfo.EditorTools
     /// this step a fresh machine would find no config, silently write the built-in defaults, and
     /// run the study on them; the only sign would be wrong numbers in the data afterwards.
     ///
-    /// Only the config is copied. Logs are the build's own output, and SessionState.csv is
-    /// deliberately left alone — see the note in <see cref="OnPostprocessBuild"/>.
+    /// The post-session database script is copied for the same reason: ExperimentDirector
+    /// resolves it relative to the folder holding the .exe, so it has to be there.
+    ///
+    /// Logs are the build's own output, and SessionState.csv is deliberately left alone —
+    /// see the note in <see cref="OnPostprocessBuild"/>.
     /// </summary>
     public class CopyExperimentDataOnBuild : IPostprocessBuildWithReport
     {
@@ -57,6 +60,43 @@ namespace JndUfo.EditorTools
             catch (System.Exception e)
             {
                 Debug.LogError($"[Build] Failed to copy ExperimentConfig.csv to {dest}: {e.Message}");
+            }
+
+            CopyAnalysisScript(buildDir);
+        }
+
+        /// <summary>
+        /// Ships Analysis/build_db.py beside the player so the post-session hook can find it.
+        ///
+        /// A warning rather than an error if it is missing: the database is a convenience
+        /// built from the CSVs, and a build without the script still collects a complete
+        /// session — the experimenter just builds the database later on their own machine.
+        /// </summary>
+        static void CopyAnalysisScript(string buildDir)
+        {
+            const string relative = "Analysis/build_db.py";
+
+            string projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
+            if (projectRoot == null) return;
+
+            string source = Path.Combine(projectRoot, relative);
+            if (!File.Exists(source))
+            {
+                Debug.LogWarning($"[Build] {relative} not found, so it was not copied. The build " +
+                                  "will still log normally; build the database afterwards by hand.");
+                return;
+            }
+
+            string dest = Path.Combine(buildDir, relative.Replace('/', Path.DirectorySeparatorChar));
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(dest));
+                File.Copy(source, dest, overwrite: true);
+                Debug.Log($"[Build] Copied build_db.py → {dest}");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[Build] Failed to copy {relative} to {dest}: {e.Message}");
             }
         }
     }

@@ -325,7 +325,7 @@ def draw_family(ax, block, gamma, x_max, cmap, show_title=True):
 
 def draw_param(ax, df, column, ylabel, *, band=False, prior=None,
                prior_fmt="{:.3f}", prior_loc="right", legend=False,
-               xlabel="Round number"):
+               legend_loc="inside", xlabel="Round number"):
     """One posterior parameter against round number, one line per block.
 
     Main-phase only regardless of --practice: practice rows all carry the identical
@@ -360,21 +360,30 @@ def draw_param(ax, df, column, ylabel, *, band=False, prior=None,
 
     if prior is not None:
         ax.axhline(prior, color=RULE, linestyle="--", linewidth=0.8, zorder=1)
-        right = prior_loc == "right"
-        ax.annotate(f"prior {prior_fmt.format(prior)}",
-                    xy=(1 if right else 0, prior),
-                    xycoords=("axes fraction", "data"),
-                    xytext=(-3 if right else 3, 3), textcoords="offset points",
-                    ha="right" if right else "left", va="bottom",
-                    fontsize=6.5, color="#6A6A6A", zorder=5, bbox=LABEL_BOX)
+        # An inline label sits on the data whenever the series crosses its own prior,
+        # which for the slope is most of the session. With a legend present the value
+        # goes there instead, where it cannot collide with anything.
+        if not legend:
+            right = prior_loc == "right"
+            ax.annotate(f"prior {prior_fmt.format(prior)}",
+                        xy=(1 if right else 0, prior),
+                        xycoords=("axes fraction", "data"),
+                        xytext=(-3 if right else 3, 3), textcoords="offset points",
+                        ha="right" if right else "left", va="bottom",
+                        fontsize=6.5, color="#6A6A6A", zorder=5, bbox=LABEL_BOX)
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     if band:
         ax.set_ylim(bottom=0)
+    else:
+        ax.margins(y=0.12)   # keep the extremes off the spines
 
     if legend:
         handles, _ = ax.get_legend_handles_labels()
+        if prior is not None:
+            handles.append(Line2D([], [], color=RULE, linestyle="--", linewidth=0.8,
+                                  label=f"prior {prior_fmt.format(prior)}"))
         handles += [
             Line2D([], [], marker="o", linestyle="", color="#4A4A4A",
                    markersize=2.6, label="hit"),
@@ -382,7 +391,17 @@ def draw_param(ax, df, column, ylabel, *, band=False, prior=None,
                    markeredgecolor="#4A4A4A", markeredgewidth=0.9,
                    markersize=3.4, label="miss"),
         ]
-        ax.legend(handles=handles, ncol=len(handles), loc="upper right")
+        if legend_loc == "above":
+            # Outside the axes entirely. Inside, there is no corner that stays clear:
+            # the slope wanders across its whole range and the lapse climbs into the
+            # top-right, so any in-panel placement covers data for some session.
+            ax.legend(handles=handles, loc="lower left", fontsize=6.5, ncol=3,
+                      bbox_to_anchor=(0, 1.01, 1, 0.16), mode="expand",
+                      borderaxespad=0, handletextpad=0.5)
+        else:
+            ax.legend(handles=handles, loc="upper right",
+                      ncol=len(handles) if len(handles) <= 4 else 2,
+                      fontsize=6.5 if len(handles) > 4 else 7)
 
 
 def x_range(df):
@@ -428,12 +447,13 @@ def fig_convergence(df, titles):
 
 
 def fig_parameters(df, titles):
-    fig, axes = plt.subplots(1, 2, figsize=(DOUBLE_COL, 2.5))
-    # Slope's prior label goes left; a right-hand one collides with the later blocks.
+    # Legends on both panels: as a standalone figure this one carries no other key, so
+    # without them the two block colours and the dashed prior are unexplained.
+    fig, axes = plt.subplots(1, 2, figsize=(DOUBLE_COL, 2.8))
     draw_param(axes[0], df, "slopeEstimate", "Slope $\\beta$",
-               prior=slope_prior(df), prior_fmt="{:.3f}", prior_loc="left")
+               prior=slope_prior(df), prior_fmt="{:.3f}", legend=True, legend_loc="above")
     draw_param(axes[1], df, "lapseEstimate", "Lapse $\\lambda$",
-               prior=lapse_prior(df), prior_fmt="{:.4f}")
+               prior=lapse_prior(df), prior_fmt="{:.4f}", legend=True, legend_loc="above")
     fig.subplots_adjust(wspace=0.26)
     if titles:
         fig.suptitle("Slope and lapse against their priors", fontweight="bold")
@@ -462,9 +482,9 @@ def fig_composite(df, gamma, session, titles):
                xlabel="Round number (continuous across blocks)")
 
     draw_param(fig.add_subplot(gs[2, 0]), df, "slopeEstimate", "Slope $\\beta$",
-               prior=slope_prior(df), prior_fmt="{:.3f}", prior_loc="left")
+               prior=slope_prior(df), prior_fmt="{:.3f}", legend=True, legend_loc="above")
     draw_param(fig.add_subplot(gs[2, 1]), df, "lapseEstimate", "Lapse $\\lambda$",
-               prior=lapse_prior(df), prior_fmt="{:.4f}")
+               prior=lapse_prior(df), prior_fmt="{:.4f}", legend=True, legend_loc="above")
 
     if titles:
         fig.suptitle(f"QUEST+ convergence \u2014 session {session}",
