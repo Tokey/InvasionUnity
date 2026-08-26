@@ -1,0 +1,3 @@
+unityApplicationFps,practiceStuttersMs,hitPoints,missPoints,stimMinMs,stimMaxMs,stimCount,threshMinMs,threshMaxMs,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD
+60,450;300;200;100;50,100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.264,50,8,5
+500,,100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.264,50,8,5

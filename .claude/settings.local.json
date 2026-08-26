@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"h:\\\\Unity Projects\\\\GitHub Repos\\\\Invasion\" -Recurse -File)",
+      "Bash(Select-Object -First 50)",
+      "PowerShell(Get-ChildItem -Path \"h:\\\\Unity Projects\\\\GitHub Repos\\\\Invasion\\\\Assets\\\\Settings\" -Recurse 2>$null | ForEach-Object { $_.FullName })",
+      "WebSearch",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
+      "PowerShell(Select-String -Path \"Assets\\\\Scripts\\\\TowerManager.cs\" -Pattern \"ShowSkyline|RentParticleBuffer|_particleBuffer|SetSkylineVisible|new ParticleSystem.Particle\\\\[\" | ForEach-Object { \"$\\($_.LineNumber\\): $\\($_.Line.Trim\\(\\)\\)\" }; \"\"; \"--- sample of restored text ---\"; \\(Get-Content \"Assets\\\\Scripts\\\\TowerManager.cs\" -TotalCount 40 | Select-Object -Last 15\\))"
+    ]
+  }
+}
