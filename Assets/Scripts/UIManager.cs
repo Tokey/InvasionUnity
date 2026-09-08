@@ -12,6 +12,13 @@ public class UIManager : MonoBehaviour
     public TMP_Text     scoreText;
     public TMP_Text     roundText;
 
+    [Tooltip("ONE font for the whole game. Assign a TMP Font Asset here and everything follows it " +
+             "— the score and round readouts below, the hit/miss callout, the weapon chip, the " +
+             "practice banner and hints, and the between-round prompts.\n\n" +
+             "Leave it empty to keep whatever font scoreText is already set to, which is what " +
+             "happens today.")]
+    public TMP_FontAsset hudFont;
+
     [Header("Debug")]
     public TMP_Text debugText;
 
@@ -35,6 +42,21 @@ public class UIManager : MonoBehaviour
     [Header("Score Text Pulse")]
     [Tooltip("Scale peak for a positive beat (hit). Miss uses 1/peak as the trough.")]
     public float scoreBeatPeak = 1.45f;
+
+    [Header("Shockwave Vignette  (Violet)")]
+    public Color shockwaveFlashColor = new(0.75f, 0.45f, 1f, 1f);
+    [Range(0f, 1f)] public float shockwaveAlpha = 0.85f;
+
+    [Header("Shockwave Callout")]
+    [Tooltip("Fired inside the response window — the stutter was noticed in time.")]
+    public string calloutShockwaveHitText = "DESTROYED!";
+    [Tooltip("Fired before the stutter ever ran, so there was nothing to answer yet.")]
+    public string calloutShockwaveEarlyText = "TOO EARLY!";
+    [Tooltip("The window closed unanswered.")]
+    public string calloutShockwaveLateText = "TOO LATE!";
+    [Tooltip("Early and late are both failures, but they are failures of opposite kinds. Amber " +
+             "rather than the miss red keeps them legible as 'wrong timing' rather than 'bad aim'.")]
+    public Color calloutShockwaveFailColor = new(1f, 0.68f, 0.2f, 1f);
 
     [Header("Hit / Miss Callout")]
     public string calloutHitText  = "Hit!";
@@ -64,6 +86,18 @@ public class UIManager : MonoBehaviour
     void Awake()
     {
         ResolveReferences();
+
+        // The hand-placed HUD is restyled here rather than by hand in the Inspector, so hudFont is
+        // genuinely one switch for the whole screen. Without this the score and round readouts
+        // would be the two texts that ignored it — and they sit directly beside the weapon chip,
+        // which is exactly where a font mismatch is most obvious.
+        if (hudFont != null)
+        {
+            HudFont.Apply(scoreText);
+            HudFont.Apply(roundText);
+            HudFont.Apply(debugText);
+        }
+
         BuildOverlays();
         if (scoreText != null)
         {
@@ -110,11 +144,41 @@ public class UIManager : MonoBehaviour
     }
 
     /// <summary>
+    /// The shockwave trial's result. Three outcomes rather than two: the participant can fail by
+    /// answering too early as well as too late, and those are opposite mistakes that need opposite
+    /// corrections, so collapsing them into one "Miss!" would withhold the only feedback that
+    /// tells them which way to move.
+    /// </summary>
+    public void DisplayShockwaveResult(ShockwaveOutcome outcome, float totalScore)
+    {
+        Debug.Log($"[UIManager] shockwave outcome={outcome} total={totalScore:0.00}");
+        RefreshScoreText();
+
+        bool detected = outcome == ShockwaveOutcome.Detected;
+        if (detected) TriggerHitFlash();
+        else          TriggerMissFlash();
+
+        string text = outcome switch
+        {
+            ShockwaveOutcome.Detected => calloutShockwaveHitText,
+            ShockwaveOutcome.Early    => calloutShockwaveEarlyText,
+            _                          => calloutShockwaveLateText,
+        };
+        ShowCallout(detected, text, detected ? calloutHitColor : calloutShockwaveFailColor);
+    }
+
+    /// <summary>
     /// Punches "Hit!" or "Miss!" into the middle of the screen, shakes it, then hides it.
     /// Retriggering restarts the shake rather than stacking coroutines, so rapid fire can't
     /// leave the text stranded off-centre.
     /// </summary>
-    public void ShowCallout(bool isHit)
+    public void ShowCallout(bool isHit) =>
+        ShowCallout(isHit, isHit ? calloutHitText : calloutMissText,
+                     isHit ? calloutHitColor : calloutMissColor);
+
+    /// <summary>As above, with the wording and colour supplied — the shockwave task has three
+    /// outcomes and the shared beat animation should not be reimplemented for them.</summary>
+    public void ShowCallout(bool isHit, string text, Color color)
     {
         // The miss sting rides with the callout rather than with the rest of the shot audio in
         // GameManager, so the sound and the text can never disagree about what just happened.
@@ -125,12 +189,28 @@ public class UIManager : MonoBehaviour
 
         if (_calloutCoroutine != null) StopCoroutine(_calloutCoroutine);
 
-        Color c = isHit ? calloutHitColor : calloutMissColor;
-        _callout.text    = isHit ? calloutHitText : calloutMissText;
-        _callout.color   = c;
+        _callout.text    = text;
+        _callout.color   = color;
         _callout.enabled = true;
 
-        _calloutCoroutine = StartCoroutine(CalloutRoutine(isHit, c));
+        _calloutCoroutine = StartCoroutine(CalloutRoutine(isHit, color));
+    }
+
+    /// <summary>
+    /// The cannon's screen flash. Fired by <see cref="ShockwaveCannon"/> at the moment of
+    /// detonation, ahead of whichever outcome flash the trial resolves into a beat later — the
+    /// blast happens whether or not the timing was right, so the flash cannot be part of the
+    /// hit/miss feedback.
+    /// </summary>
+    public void TriggerShockwaveFlash()
+    {
+        if (_vignette == null) BuildOverlays();
+        if (_vignette == null) return;
+
+        StopFlash();
+        _vignette.color = new Color(shockwaveFlashColor.r, shockwaveFlashColor.g,
+                                     shockwaveFlashColor.b, shockwaveAlpha);
+        _flashCoroutine = StartCoroutine(VignetteRoutine());
     }
 
     public void SetDebugText(string text)
@@ -214,6 +294,9 @@ public class UIManager : MonoBehaviour
         text.alignment     = TextAlignmentOptions.Center;
         text.raycastTarget = false;
         text.enabled       = false;
+        // Same typeface as the score readout beside it — see HudFont. Everything on this screen is
+        // built from code except the HUD, and without this the callout was the odd one out.
+        HudFont.Apply(text);
         _callout = text;
     }
 

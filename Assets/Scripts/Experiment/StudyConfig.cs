@@ -7,13 +7,31 @@ using UnityEngine;
 namespace JndUfo
 {
     /// <summary>
-    /// The whole study's configuration: <c>Data/ExperimentConfig.csv</c>, a single header row
-    /// plus a single value row. Three groups of columns and nothing else —
+    /// Which cannon the participant fires, and therefore which task they are doing. The two share
+    /// the QUEST+ machinery and the stutter itself; they differ in what triggers the stutter and
+    /// what counts as noticing it.
     ///
-    ///   round     label, roundsPerSession, roundDurationSec
-    ///   task      closeRadius, showHitZone, crossingDeadZone, fireCooldown, revealHoldSec,
-    ///             hitPoints, missPoints
-    ///   QUEST+    stim/thresh/slope/lapse grids, guessRate, maxTrials, minTrials, stopSD
+    ///   Laser       The stutter fires when the UFO crosses the tower. The participant then
+    ///               shoots at the fog-hidden tower, and landing the shot IS the detection
+    ///               response — a spatial task, scored by aim.
+    ///
+    ///   Shockwave  The stutter fires on a timer, at a random delay the participant cannot
+    ///               anticipate, and they have a randomly-drawn window to answer it by firing.
+    ///               The cannon levels the whole plane, so aim is meaningless and the response is
+    ///               purely temporal: fire inside the window and they noticed it, fire before
+    ///               the stutter or not at all and they did not.
+    /// </summary>
+    public enum WeaponKind { Laser, Shockwave }
+
+    /// <summary>
+    /// The whole study's configuration: <c>Data/ExperimentConfig.csv</c>, a single header row
+    /// plus one value row per block. Four groups of columns and nothing else —
+    ///
+    ///   round      label, roundsPerSession, roundDurationSec
+    ///   weapon     weapon, swSpikeDelayMin/MaxSec, swWindowMin/MaxSec
+    ///   task       closeRadius, showHitZone, crossingDeadZone, fireCooldown, revealHoldSec,
+    ///              hitPoints, missPoints
+    ///   QUEST+     stim/thresh/slope/lapse grids, guessRate, maxTrials, minTrials, stopSD
     ///
     /// The QUEST+ column names are unchanged from the FrametimeQuestConfig.csv this was merged
     /// out of, so <see cref="QuestPlusConfig.FromCsv"/> consumes <see cref="Row"/> directly with
@@ -53,6 +71,35 @@ namespace JndUfo
         /// against one measured uncapped.
         /// </summary>
         public int unityApplicationFps;
+
+        // ── Weapon ───────────────────────────────────────────────────────────
+
+        /// <summary>Which cannon this block hands the participant, and therefore which task they
+        /// are doing. See <see cref="WeaponKind"/>. CSV column <c>weapon</c>: "laser" or
+        /// "shockwave".</summary>
+        public WeaponKind weapon = WeaponKind.Laser;
+
+        public bool IsShockwave => weapon == WeaponKind.Shockwave;
+
+        /// <summary>
+        /// Shockwave only: the stutter fires at a delay drawn uniformly from
+        /// [<see cref="swSpikeDelayMinSec"/>, <see cref="swSpikeDelayMaxSec"/>] after the trial
+        /// arms, and the participant then has a window drawn uniformly from
+        /// [<see cref="swWindowMinSec"/>, <see cref="swWindowMaxSec"/>] to answer it.
+        ///
+        /// The delay spread MUST exceed the response window, or the task measures nothing: if
+        /// every possible window overlaps at some instant t, a participant who perceives nothing
+        /// wins every trial by firing at t and never has to detect anything. The safe condition
+        /// is <c>delayMax &gt; delayMin + windowMin</c>; <see cref="ValidateShockwaveTiming"/>
+        /// checks it at load and says so loudly when it fails.
+        ///
+        /// Both are randomised per trial rather than fixed so the participant cannot learn one
+        /// rhythm and run the whole block off a metronome.
+        /// </summary>
+        public float swSpikeDelayMinSec = 2f;
+        public float swSpikeDelayMaxSec = 6f;
+        public float swWindowMinSec     = 1.5f;
+        public float swWindowMaxSec     = 2.5f;
 
         // ── Mode — fixed, not read from the CSV (see the class doc) ──────────
         public readonly PerturbationController.TestMode testMode = PerturbationController.TestMode.FrameTimeStutter;
@@ -157,8 +204,10 @@ namespace JndUfo
                 blocks.Add(c);
             }
 
-            Debug.Log($"[StudyConfig] Loaded {blocks.Count} block(s) from {path} — FPS caps: " +
-                      string.Join(", ", blocks.ConvertAll(b => b.unityApplicationFps > 0 ? b.unityApplicationFps.ToString() : "uncapped")));
+            Debug.Log($"[StudyConfig] Loaded {blocks.Count} block(s) from {path} — " +
+                      string.Join(", ", blocks.ConvertAll(b =>
+                          $"{b.weapon.ToString().ToLowerInvariant()}@" +
+                          (b.unityApplicationFps > 0 ? b.unityApplicationFps + "fps" : "uncapped"))));
             return blocks;
         }
 
@@ -172,8 +221,136 @@ namespace JndUfo
             c.hitPoints  = CsvTable.GetFloat(row, "hitPoints", 100f);
             c.missPoints = CsvTable.GetFloat(row, "missPoints", -10f);
 
+            c.weapon = ParseWeapon(CsvTable.GetString(row, "weapon", "laser"));
+
+            // Read for every block, not just shockwave ones, so the columns stay meaningful in
+            // the cfg_* echo of a laser block's logs. Ordered rather than trusted: a hand-edited
+            // row with min > max would otherwise hand Random.Range a reversed span.
+            c.swSpikeDelayMinSec = Mathf.Max(0f, CsvTable.GetFloat(row, "swSpikeDelayMinSec", 2f));
+            c.swSpikeDelayMaxSec = Mathf.Max(0f, CsvTable.GetFloat(row, "swSpikeDelayMaxSec", 6f));
+            c.swWindowMinSec     = Mathf.Max(0.05f, CsvTable.GetFloat(row, "swWindowMinSec", 1.5f));
+            c.swWindowMaxSec     = Mathf.Max(0.05f, CsvTable.GetFloat(row, "swWindowMaxSec", 2.5f));
+            Order(ref c.swSpikeDelayMinSec, ref c.swSpikeDelayMaxSec);
+            Order(ref c.swWindowMinSec,     ref c.swWindowMaxSec);
+
+            if (c.IsShockwave) c.ValidateShockwaveTiming();
+
             // Everything else QUEST+ needs is read straight off Row by QuestPlusConfig.FromCsv.
             return c;
+        }
+
+        static void Order(ref float lo, ref float hi)
+        {
+            if (lo > hi) { float t = lo; lo = hi; hi = t; }
+        }
+
+        static WeaponKind ParseWeapon(string cell)
+        {
+            string s = (cell ?? string.Empty).Trim();
+            if (s.Length == 0) return WeaponKind.Laser;
+            if (s.Equals("shockwave", System.StringComparison.OrdinalIgnoreCase)) return WeaponKind.Shockwave;
+            if (s.Equals("laser",     System.StringComparison.OrdinalIgnoreCase)) return WeaponKind.Laser;
+
+            // The weapon was called "antimatter" up to and including session 44, and every config
+            // written before the rename still says so. Accepted rather than rejected because the
+            // fallback below is LASER: an unrecognised value would not fail loudly, it would
+            // quietly run the wrong task for a whole block and produce a threshold for a weapon
+            // nobody selected. Warn, so the file gets updated, but never mis-run the study.
+            if (s.Equals("antimatter", System.StringComparison.OrdinalIgnoreCase))
+            {
+                Debug.LogWarning("[StudyConfig] weapon='antimatter' is the pre-rename name for " +
+                                  "'shockwave' — honouring it. Update Data/ExperimentConfig.csv.");
+                return WeaponKind.Shockwave;
+            }
+
+            Debug.LogWarning($"[StudyConfig] weapon='{cell}' is not 'laser' or 'shockwave' — using laser.");
+            return WeaponKind.Laser;
+        }
+
+        /// <summary>
+        /// Checks how well a participant does on the shockwave task by timing alone, and compares
+        /// it against the chance level the config has declared to QUEST+.
+        ///
+        /// A trial is won by firing inside [D, D + W]. Ignoring the stutter entirely and always
+        /// firing at <c>delayMax</c> is the best such strategy — fire later and the window may
+        /// already have closed, fire earlier and D may not have elapsed — and it wins with
+        /// probability <c>E[min(spread, W)] / spread</c>. That number IS the floor of the
+        /// psychometric curve, whatever <c>guessRate</c> says it is.
+        ///
+        /// The two failures it catches are different in degree, not in kind:
+        ///
+        ///   rate = 1     every fire time wins, the threshold is unmeasurable rather than noisy.
+        ///                Happens when <c>spread &lt;= windowMin</c>.
+        ///   rate &gt; γ  chance level is higher than QUEST+ has been told. The posterior credits
+        ///                the excess to detection, so the threshold estimate comes out too LOW —
+        ///                silently, and on every trial. This is the one that bites, because the
+        ///                timing looks perfectly reasonable while it happens.
+        ///
+        /// Logged as an error, never silently corrected: which of the four numbers to move is a
+        /// study-design decision, not a clamp.
+        /// </summary>
+        public void ValidateShockwaveTiming()
+        {
+            float spread = swSpikeDelayMaxSec - swSpikeDelayMinSec;
+            if (spread <= 0.0001f)
+            {
+                Debug.LogError("[StudyConfig] Shockwave delay has no spread — the stutter arrives " +
+                                "at the same instant every trial, so it can be answered from memory. " +
+                                "Widen swSpikeDelayMaxSec in Data/ExperimentConfig.csv.");
+                return;
+            }
+
+            float blind = MeanMinWithWindow(spread) / spread;
+
+            if (blind >= 0.999f)
+            {
+                Debug.LogError(
+                    $"[StudyConfig] Shockwave timing is exploitable: delay spread " +
+                    $"({swSpikeDelayMinSec:0.##}–{swSpikeDelayMaxSec:0.##}s = {spread:0.##}s) does not " +
+                    $"exceed the shortest response window ({swWindowMinSec:0.##}s). Firing at " +
+                    $"t = {swSpikeDelayMaxSec:0.##}s wins EVERY trial without detecting anything. " +
+                    "Widen swSpikeDelayMaxSec or shorten swWindowMinSec in Data/ExperimentConfig.csv.");
+                return;
+            }
+
+            // Read straight from the row: guessRate belongs to QuestPlusConfig, but it is the only
+            // thing this rate can be judged against, and a mismatch is a property of the CSV row as
+            // a whole rather than of either half.
+            float declared = Row != null ? CsvTable.GetFloat(Row, "guessRate", blind) : blind;
+
+            // A few points of slack — these are means over a uniform draw, and demanding an exact
+            // match would fire on rounding.
+            if (blind <= declared + 0.03f) return;
+
+            Debug.LogError(
+                $"[StudyConfig] Shockwave chance level is understated: always firing at " +
+                $"t = {swSpikeDelayMaxSec:0.##}s wins {blind:P0} of trials with no perception at " +
+                $"all, but guessRate says {declared:P0}. QUEST+ will credit the difference to " +
+                $"detection and estimate a threshold that is too low. Either set guessRate to " +
+                $"{blind:0.###}, or restore the balance — the blind rate is (mean window) / " +
+                $"(delay spread), so a {(swWindowMinSec + swWindowMaxSec) * 0.5f:0.##}s mean window " +
+                $"needs a {(swWindowMinSec + swWindowMaxSec) * 0.5f / Mathf.Max(0.01f, declared):0.##}s " +
+                "spread. Edit Data/ExperimentConfig.csv.");
+        }
+
+        /// <summary>
+        /// E[min(cap, W)] for W drawn uniformly from [windowMin, windowMax] — the expected amount
+        /// of the response window that is actually reachable when only <paramref name="cap"/>
+        /// seconds of delay spread stand in front of it.
+        /// </summary>
+        float MeanMinWithWindow(float cap)
+        {
+            float w1 = swWindowMinSec, w2 = swWindowMaxSec;
+
+            if (cap <= w1) return cap;                       // every window outlasts the spread
+            if (cap >= w2) return (w1 + w2) * 0.5f;           // no window reaches the spread
+            if (w2 - w1 < 0.0001f) return Mathf.Min(cap, w1); // fixed window
+
+            // Split the uniform draw at cap: below it the window contributes itself, above it the
+            // spread is the binding constraint.
+            float below = (cap * cap - w1 * w1) * 0.5f;
+            float above = cap * (w2 - cap);
+            return (below + above) / (w2 - w1);
         }
 
         // Semicolon-separated so a whole list fits in one cell without colliding with the CSV's
@@ -222,19 +399,35 @@ namespace JndUfo
         static string DefaultCsv()
         {
             var sb = new StringBuilder();
-            const string tail = "100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.264,50,8,5";
+            const string ladder = "450;300;200;100;50";
+            const string timing = "2,6,1.5,2.5";
+            const string points = "100,-10";
+            const string grids  = "5,250,40,5,250,60,1,8,11,0,0.06,4";
+            const string stop   = "50,8,5";
 
             sb.AppendLine(
-                "unityApplicationFps,practiceStuttersMs,hitPoints,missPoints," +
+                "weapon,unityApplicationFps,practiceStuttersMs," +
+                "swSpikeDelayMinSec,swSpikeDelayMaxSec,swWindowMinSec,swWindowMaxSec," +
+                "hitPoints,missPoints," +
                 "stimMinMs,stimMaxMs,stimCount,threshMinMs,threshMaxMs,threshCount," +
                 "slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount," +
                 "guessRate,maxTrials,minTrials,stopSD");
 
-            // Two blocks, identical QUEST+ settings, differing only in frame-rate cap — the
-            // comparison the multi-row config exists for. Practice sits on the first block only,
-            // so the participant warms up once rather than before every block.
-            sb.AppendLine("60,450;300;200;100;50," + tail);
-            sb.AppendLine("500,," + tail);
+            // Identical QUEST+ grids throughout, so the only thing separating the blocks is the
+            // factor each one exists to vary — the weapon first, then the frame-rate cap.
+            //
+            // guessRate is the exception and must differ: it is chance level, and chance level is
+            // a property of the task. For the laser it is geometric (2r / shot-reachable width,
+            // printed at startup by GuessRateCalculator); for shockwave it is temporal — the best
+            // a participant who perceives nothing can do by picking a moment to fire, printed at
+            // startup by ShockwaveGuessRate. Using one number for both would misfit one of them.
+            //
+            // Practice sits on the first block of each weapon: they are different tasks with
+            // different responses, so one warm-up cannot serve both, but a second laser block does
+            // not need its own.
+            sb.AppendLine($"shockwave,60,{ladder},{timing},{points},{grids},0.5,{stop}");
+            sb.AppendLine($"laser,60,{ladder},{timing},{points},{grids},0.264,{stop}");
+            sb.AppendLine($"laser,500,,{timing},{points},{grids},0.264,{stop}");
             return sb.ToString();
         }
     }

@@ -54,14 +54,16 @@ LOGS = {
 # Constant across every row of a (session, block, phase) group, so they are stored
 # once in `block` rather than repeated on every fact row.
 BLOCK_KEY = ("sessionId", "blockIndex", "phase")
-BLOCK_ATTRS = ("unityApplicationFps", "testMode", "closeRadius", "phaseStartIso")
+BLOCK_ATTRS = ("unityApplicationFps", "testMode", "closeRadius", "weapon", "phaseStartIso")
 
 # Written by CsvTable.F for a float.NaN. SQL wants a NULL, not the string "NaN" -
 # otherwise the column infers as TEXT and every numeric comparison silently fails.
 NULLS = {"", "nan", "NaN", "NAN", "-nan", "Infinity", "-Infinity", "∞"}
 
 BOOL_COLUMNS = {"isHit", "spikeFired", "shotFired", "leftButtonDown",
-                "leftButtonPressed", "fireKeyDown"}
+                "leftButtonPressed", "fireKeyDown",
+                # antimatter
+                "playerFired", "countedByStaircase", "windowOpen"}
 
 
 # ---------------------------------------------------------------- csv
@@ -137,6 +139,7 @@ def create_block_table(con, cfg_columns):
             unityApplicationFps TEXT,
             testMode            TEXT,
             closeRadius         REAL,
+            weapon              TEXT,
             phaseStartIso       TEXT,
             sourceFolder        TEXT,
             columnCount         INTEGER,
@@ -144,8 +147,45 @@ def create_block_table(con, cfg_columns):
             UNIQUE (sessionId, blockIndex, phase)
         )""")
 
+    # Widen for anything the CREATE above did not name. Two things drift: a column added
+    # to BLOCK_ATTRS but not to the literal above (which is how `weapon` silently broke
+    # every current-schema session), and cfg_* sets that differ between the file that
+    # created the table and a later one - the old logs in this tree carry cfg_label where
+    # the current ones carry cfg_weapon, and --combined puts both in one database.
+    existing = {r[1] for r in con.execute("PRAGMA table_info(block)")}
+    for c in (*BLOCK_ATTRS, *cfg_columns):
+        if c not in existing:
+            con.execute(f"ALTER TABLE block ADD COLUMN {quote(c)} TEXT")
+            existing.add(c)
 
-def block_id(con, cache, row, cfg_columns, folder, ncols):
+
+def fill_block_gaps(con, bid, row, cfg_columns):
+    """Fill in block columns the file that created this block row did not carry.
+
+    SessionLog has no phase, closeRadius or phaseStartIso. It therefore creates the
+    main-phase block row without them, and the shot and frame files - which do carry all
+    three - would otherwise find the key already cached and silently drop their values.
+    They are hoisted off the fact tables, so a value dropped here is gone from the
+    database entirely, and closeRadius is what decides isHit: without it the main phase,
+    the only phase that counts, cannot be re-scored.
+
+    Only ever writes over a NULL, so the first file to state a value still wins.
+    """
+    cur = con.execute("SELECT * FROM block WHERE block_id = ?", (bid,))
+    present = dict(zip([d[0] for d in cur.description], cur.fetchone()))
+
+    sets, params = [], []
+    for c in (*BLOCK_ATTRS, *cfg_columns):
+        if present.get(c) is None and row.get(c) is not None:
+            sets.append(f"{quote(c)} = ?")
+            params.append(convert(row[c], "REAL") if c == "closeRadius" else row[c])
+
+    if sets:
+        con.execute(f"UPDATE block SET {', '.join(sets)} WHERE block_id = ?",
+                    params + [bid])
+
+
+def block_id(con, cache, filled, row, cfg_columns, folder, ncols):
     """Find or create the block row this fact row belongs to."""
     session = row.get("sessionId") or "0"
     index = row.get("blockIndex") or "1"
@@ -154,6 +194,11 @@ def block_id(con, cache, row, cfg_columns, folder, ncols):
     key = (session, index, phase)
 
     if key in cache:
+        # Once per file, not once per row: the columns are constant across the group, so
+        # the first row of this file settles what it has to contribute.
+        if key not in filled:
+            filled.add(key)
+            fill_block_gaps(con, cache[key], row, cfg_columns)
         return cache[key]
 
     names = ["sessionId", "blockIndex", "phase", "sourceFolder", "columnCount"]
@@ -211,9 +256,13 @@ def import_table(con, table, path, cache, counts):
             {col_defs}
         )""")
 
+    # Per file: each one gets a single chance to fill gaps left by whichever file
+    # created the block row before it.
+    filled = set()
+
     payload = []
     for d in dicts:
-        bid = block_id(con, cache, d, cfg_columns, str(path.parent), len(header))
+        bid = block_id(con, cache, filled, d, cfg_columns, str(path.parent), len(header))
         payload.append([bid] + [convert(d.get(c), types[c]) for c in fact_columns])
 
     names = ", ".join(["block_id"] + [quote(c) for c in fact_columns])

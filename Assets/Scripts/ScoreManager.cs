@@ -55,6 +55,30 @@ namespace JndUfo
             return pts;
         }
 
+        /// <summary>
+        /// Scores a trial whose outcome was decided by something other than distance — the
+        /// shockwave weapon's response window.
+        ///
+        /// The cannon levels the whole plane, so there is no distance for it to be scored by and
+        /// aim must not leak into the result: a participant who answered in time earns the hit
+        /// whether they were over the tower or at the far edge of the field.
+        /// <paramref name="distanceForLog"/> is still recorded so the shot log keeps the geometry
+        /// alongside every other trial, but it never reaches the score.
+        /// </summary>
+        public float ScoreOutcome(bool success, float distanceForLog)
+        {
+            LastShotDistance = distanceForLog;
+
+            float pts = success ? hitPoints : missPoints;
+
+            LastShotScore = pts;
+            TotalScore += pts;
+            ShotCount += 1;
+            Debug.Log($"[ScoreManager] outcome success={success} shot={pts:0.00} total={TotalScore:0.00} (distance not scored)");
+            OnScored?.Invoke(LastShotScore, TotalScore, distanceForLog);
+            return pts;
+        }
+
         public void ResetScore()
         {
             TotalScore = 0f;

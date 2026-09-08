@@ -1,27 +1,34 @@
 """
 Batch-render QUEST+ convergence figures from every shot log under a data folder.
 
-Walks the tree, finds each ShotLog_<id>.csv, and emits publication-ready figures per
-session plus one summary table across all of them.
+Walks the tree and emits one independent set of publication-ready figures per folder -
+Data/Ben, Data/Josef, Data/Mark each get their own. Nothing is ever pooled or averaged
+across folders; participants are the unit of analysis, and a mean across them would
+hide the between-participant spread the study exists to measure.
+
+A dataset is identified by its FOLDER NAME, not by the sessionId inside the file. The
+session counter lives beside the build that recorded a run, so two participants can
+easily share sessionId 1 - naming output by sessionId would have one silently overwrite
+the other. The folder name goes in every filename and is stamped on every figure.
 
 Every shot row carries the posterior that existed *after* that response -
 threshEstimateMs, slopeEstimate, lapseEstimate and sd - so each row is a complete
 Weibull. Drawing them all shows the staircase converging: red curves early, blue late.
 
-Figures written per session (PDF for typesetting, PNG for slides):
-    Fig_curves_<id>       one psychometric-curve family per block
-    Fig_convergence_<id>  threshold estimate against round number
-    Fig_parameters_<id>   slope and lapse against their prior means
-    Fig_composite_<id>    all of the above stacked, for internal review
+Written per folder, into <out>/<folder>/ (PDF for typesetting, PNG for slides):
+    Fig_curves_<folder>       one psychometric-curve family per block
+    Fig_convergence_<folder>  threshold estimate against round number
+    Fig_parameters_<folder>   slope and lapse against their prior means
+    Fig_composite_<folder>    all of the above stacked, for internal review
 And once for the whole run:
-    quest_summary.csv     one row per block: final estimates, accuracy, convergence
+    quest_summary.csv     one row per block per folder - tabulated, not averaged
     captions.txt          draft captions with the real numbers filled in
 
 Usage
-    python plot_quest.py                       # walk ./Data, write to ./Analysis/figures
-    python plot_quest.py --data "D:/Builds/Invasion/Data"
+    python plot_quest.py --data "I:/JND - FrameTime Stutter/Data"
     python plot_quest.py --list                # show what would be processed, write nothing
-    python plot_quest.py --session 1 --show    # one session, open it interactively
+    python plot_quest.py --only Ben Mark       # just those folders
+    python plot_quest.py --flat                # all figures in one directory
     python plot_quest.py --figures composite   # just the composite
     python plot_quest.py --formats pdf svg
     python plot_quest.py --titles              # bake titles in (off by default: journals
@@ -189,19 +196,35 @@ def weibull(x, threshold, slope, lapse, guess):
 
 # ---------------------------------------------------------------- io
 
-def find_shot_logs(root, session=None):
-    """Every ShotLog CSV anywhere under root, ordered by session id."""
+def find_shot_logs(root, only=None):
+    """Every ShotLog CSV under root, as (path, label) pairs.
+
+    The label is the containing folder's name, and it - not the sessionId inside the
+    file - is what identifies a dataset. Folders get named after participants, and
+    several participants can easily carry the same sessionId because the counter lives
+    beside the build that recorded them. Naming figures by sessionId would silently
+    overwrite one participant's output with another's.
+    """
     if not root.is_dir():
         return []
 
-    logs = sorted(
-        root.rglob("ShotLog_*.csv"),
-        key=lambda p: (int(m.group(1)) if (m := re.search(r"ShotLog_(\d+)", p.stem)) else 0,
-                       str(p)),
-    )
-    if session is not None:
-        logs = [p for p in logs if re.search(rf"ShotLog_{session}(?:_|\.)", p.name)]
-    return logs
+    pairs = []
+    for path in sorted(root.rglob("ShotLog_*.csv"), key=str):
+        folder = path.parent
+        label = folder.name if folder != root else path.stem
+
+        # Two logs in one folder still need distinct names.
+        if len(list(folder.glob("ShotLog_*.csv"))) > 1:
+            m = re.search(r"ShotLog_(.+)$", path.stem)
+            label = f"{label}_{m.group(1)}" if m else label
+
+        pairs.append((path, label))
+
+    if only:
+        wanted = {o.lower() for o in only}
+        pairs = [(p, l) for p, l in pairs
+                 if l.lower() in wanted or p.parent.name.lower() in wanted]
+    return pairs
 
 
 def load(path, include_practice=False):
@@ -424,7 +447,23 @@ def lapse_prior(df):
 
 # ---------------------------------------------------------------- figures
 
-def fig_curves(df, gamma, titles):
+def stamp(fig, label):
+    """Put the dataset's name on the figure.
+
+    Always drawn, even with titles off, because this is identification rather than
+    decoration - a figure that has been dragged into a folder of other participants'
+    figures still has to say whose it is.
+
+    Anchored above everything at y = 1.0 in figure coordinates. savefig runs with
+    bbox_inches="tight", so the saved bounding box grows to include it and it cannot
+    collide with a title, a panel heading, or a legend placed above the axes.
+    """
+    if label:
+        fig.text(0.0, 1.0, label, ha="left", va="bottom",
+                 fontsize=7.5, fontweight="bold", color="#4A4A4A")
+
+
+def fig_curves(df, gamma, label, titles):
     blocks = [b for _, b in df.groupby("blockIndex", sort=True)]
     cmap, x_max = trial_ramp(), x_range(df)
     fig, axes = plt.subplots(1, len(blocks), figsize=(DOUBLE_COL, 2.7), squeeze=False)
@@ -432,21 +471,23 @@ def fig_curves(df, gamma, titles):
         draw_family(ax, block, gamma, x_max, cmap, show_title=True)
     fig.subplots_adjust(wspace=0.24)
     if titles:
-        fig.suptitle("Psychometric function after every shot", fontweight="bold")
+        fig.suptitle(f"{label} — psychometric function after every shot", fontweight="bold")
+    stamp(fig, label)
     return fig
 
 
-def fig_convergence(df, titles):
+def fig_convergence(df, label, titles):
     fig, ax = plt.subplots(figsize=(DOUBLE_COL, 2.9))
     draw_param(ax, df, "threshEstimateMs", "Threshold $\\hat{\\theta}$ (ms)",
                band=True, legend=True,
                xlabel="Round number (continuous across blocks)")
     if titles:
-        fig.suptitle("Threshold estimate by trial", fontweight="bold")
+        fig.suptitle(f"{label} — threshold estimate by trial", fontweight="bold")
+    stamp(fig, label)
     return fig
 
 
-def fig_parameters(df, titles):
+def fig_parameters(df, label, titles):
     # Legends on both panels: as a standalone figure this one carries no other key, so
     # without them the two block colours and the dashed prior are unexplained.
     fig, axes = plt.subplots(1, 2, figsize=(DOUBLE_COL, 2.8))
@@ -456,11 +497,12 @@ def fig_parameters(df, titles):
                prior=lapse_prior(df), prior_fmt="{:.4f}", legend=True, legend_loc="above")
     fig.subplots_adjust(wspace=0.26)
     if titles:
-        fig.suptitle("Slope and lapse against their priors", fontweight="bold")
+        fig.suptitle(f"{label} — slope and lapse against their priors", fontweight="bold")
+    stamp(fig, label)
     return fig
 
 
-def fig_composite(df, gamma, session, titles):
+def fig_composite(df, gamma, label, titles):
     blocks = [b for _, b in df.groupby("blockIndex", sort=True)]
     ncols = len(blocks)
     grid_cols = max(ncols, 2)   # the bottom row always needs two
@@ -487,23 +529,28 @@ def fig_composite(df, gamma, session, titles):
                prior=lapse_prior(df), prior_fmt="{:.4f}", legend=True, legend_loc="above")
 
     if titles:
-        fig.suptitle(f"QUEST+ convergence \u2014 session {session}",
-                     fontweight="bold", y=0.975)
+        fig.suptitle(f"QUEST+ convergence \u2014 {label}", fontweight="bold", y=0.975)
+    stamp(fig, label)
     return fig
 
 
 BUILDERS = {
-    "curves":      lambda df, g, s, t: fig_curves(df, g, t),
-    "convergence": lambda df, g, s, t: fig_convergence(df, t),
-    "parameters":  lambda df, g, s, t: fig_parameters(df, t),
-    "composite":   lambda df, g, s, t: fig_composite(df, g, s, t),
+    "curves":      lambda df, g, lb, t: fig_curves(df, g, lb, t),
+    "convergence": lambda df, g, lb, t: fig_convergence(df, lb, t),
+    "parameters":  lambda df, g, lb, t: fig_parameters(df, lb, t),
+    "composite":   lambda df, g, lb, t: fig_composite(df, g, lb, t),
 }
 
 
 # ---------------------------------------------------------------- reporting
 
-def summarise(df, path, session):
-    """One record per block, for the cross-session table."""
+def summarise(df, path, label, session):
+    """One record per block.
+
+    One row per block per dataset, never a mean across datasets - participants are the
+    unit of analysis here, and averaging thresholds across them would hide exactly the
+    between-participant spread the study is trying to measure.
+    """
     rows = []
     stop_sd = cfg_value(df, "cfg_stopSD")
     max_trials = cfg_value(df, "cfg_maxTrials")
@@ -513,6 +560,7 @@ def summarise(df, path, session):
         hits = int(block["isHit"].astype(bool).sum())
         n = len(block)
         rows.append({
+            "folder": label,
             "sessionId": session,
             "blockIndex": int(block_index),
             "fpsCap": block_label(block),
@@ -542,16 +590,16 @@ def print_summary(rows):
               f"accuracy = {r['accuracyPct']:.0f}%{flag}")
 
 
-def captions(rows_by_session):
-    """Draft captions with the real numbers already in them."""
+def captions(rows_by_dataset):
+    """Draft captions with the real numbers already in them, one set per dataset."""
     out = []
-    for session, rows in rows_by_session:
+    for session, rows in rows_by_dataset:
         # Plain ASCII throughout - these get pasted into LaTeX and Word, where a
         # stray Unicode glyph is one more thing to go wrong.
         parts = ", ".join(
             f"{r['thresholdMs']:.1f} +/- {r['sdMs']:.1f} ms at {r['fpsCap']}" for r in rows)
         total = sum(r["trials"] for r in rows)
-        out.append(f"""Session {session}
+        out.append(f"""{session}
 
 Fig. curves. Psychometric function implied by the QUEST+ posterior after each of the
 {total} trials, one curve per shot, coloured red (first shot) through blue (last).
@@ -588,7 +636,11 @@ def main():
                     help=f"Folder to walk for ShotLog_*.csv. Default: {DATA_ROOT}")
     ap.add_argument("--out", type=Path, default=OUT_ROOT,
                     help=f"Where figures are written. Default: {OUT_ROOT}")
-    ap.add_argument("--session", type=int, help="Only this session id.")
+    ap.add_argument("--only", nargs="+", metavar="NAME",
+                    help="Only these folders, e.g. --only Ben Mark")
+    ap.add_argument("--flat", action="store_true",
+                    help="Write every figure into --out directly instead of one "
+                         "subfolder per dataset. Names stay unique either way.")
     ap.add_argument("--figures", nargs="+", default=list(BUILDERS),
                     choices=list(BUILDERS), help="Which figures to render.")
     ap.add_argument("--formats", nargs="+", default=["pdf", "png"],
@@ -608,16 +660,17 @@ def main():
                     help="Open the figures instead of writing them.")
     args = ap.parse_args()
 
-    paths = find_shot_logs(args.data, args.session)
-    if not paths:
-        where = f"session {args.session}" if args.session else "any session"
+    datasets = find_shot_logs(args.data, args.only)
+    if not datasets:
+        where = f"folder(s) {', '.join(args.only)}" if args.only else "any folder"
         sys.exit(f"No ShotLog found for {where} under {args.data}\n"
                  f"A built player logs beside its executable - try --data <build>/Data")
 
     if args.list:
-        print(f"{len(paths)} shot log(s) under {args.data}:")
-        for p in paths:
-            print(f"  {p.relative_to(args.data) if args.data in p.parents else p}")
+        print(f"{len(datasets)} dataset(s) under {args.data}:")
+        for path, label in datasets:
+            rel = path.relative_to(args.data) if args.data in path.parents else path
+            print(f"  {label:20s} {rel}")
         return
 
     family = use_publication_style()
@@ -626,9 +679,9 @@ def main():
     if not args.show:
         args.out.mkdir(parents=True, exist_ok=True)
 
-    all_rows, by_session, count = [], [], 0
+    all_rows, by_dataset, count = [], [], 0
 
-    for path in paths:
+    for path, label in datasets:
         df = load(path, args.practice)
         if df is None:
             continue
@@ -636,18 +689,24 @@ def main():
         session = df["sessionId"].iloc[0] if "sessionId" in df.columns else path.stem
         gamma = guess_rate(df)
 
-        print(f"\n{path.name}  (session {session})")
-        rows = summarise(df, path, session)
+        print(f"\n{label}  ({path.name}, sessionId {session})")
+        rows = summarise(df, path, label, session)
         print_summary(rows)
         all_rows += rows
-        by_session.append((session, rows))
+        by_dataset.append((label, rows))
         count += 1
 
+        # One subfolder per dataset by default. The name is in the filename as well, so
+        # a figure still identifies itself once it has been dragged out of its folder.
+        target = args.out if args.flat else args.out / label
+        if not args.show:
+            target.mkdir(parents=True, exist_ok=True)
+
         for name in args.figures:
-            fig = BUILDERS[name](df, gamma, session, args.titles)
+            fig = BUILDERS[name](df, gamma, label, args.titles)
             if args.show:
                 continue
-            written = save(fig, f"Fig_{name}_{session}", args.out, args.formats, args.dpi)
+            written = save(fig, f"Fig_{name}_{label}", target, args.formats, args.dpi)
             plt.close(fig)
             print(f"  -> {', '.join(w.name for w in written)}")
 
@@ -665,10 +724,10 @@ def main():
         writer.writerows(all_rows)
 
     caption_file = args.out / "captions.txt"
-    caption_file.write_text(captions(by_session), encoding="utf-8")
+    caption_file.write_text(captions(by_dataset), encoding="utf-8")
 
-    print(f"\n{count} session(s), {len(all_rows)} block(s) -> {args.out}")
-    print(f"  {table.name}, {caption_file.name}")
+    print(f"\n{count} dataset(s), {len(all_rows)} block(s) -> {args.out}")
+    print(f"  {table.name}, {caption_file.name}   (one row per block, nothing averaged)")
 
 
 if __name__ == "__main__":

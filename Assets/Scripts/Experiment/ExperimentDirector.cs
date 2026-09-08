@@ -58,6 +58,29 @@ namespace JndUfo
                  "which would otherwise leave the session with no way to end.")]
         public float fallbackDurationSec = 300f;
 
+        [Header("Practice Hints")]
+        [Tooltip("During PRACTICE only, flash a line the moment a stutter is delivered, so the " +
+                 "participant learns what they are being asked to look for. Never shown in a main " +
+                 "round — there it would be a second, unmissable copy of the stimulus whose " +
+                 "detectability QUEST+ is measuring.")]
+        public bool showPracticeHints = true;
+
+        [Tooltip("The standing prompt, up for the whole practice trial and quietly breathing. It " +
+                 "names the thing being looked for, which a participant who has never knowingly " +
+                 "seen a frame-time stutter has no other way to learn.")]
+        public string idleHintText = "SPOT THE STUTTER";
+
+        [Tooltip("Laser practice. The stutter fires when the UFO crosses the tower, so the tower is " +
+                 "wherever they are standing at that instant — 'here' is the lesson.")]
+        public string laserHintText = "STUTTER — FIRE HERE";
+
+        [Tooltip("Shockwave practice. Aim is meaningless and the response window is closing, so " +
+                 "'now' is the lesson. The contrast with the laser wording is deliberate.")]
+        public string shockwaveHintText = "STUTTER — FIRE NOW";
+
+        [Tooltip("Seconds the hint holds before fading.")]
+        [Min(0.1f)] public float practiceHintSec = 1.1f;
+
         [Header("References  (auto-found; drag-override if needed)")]
         public GameManager            gameManager;
         public LaserFirer             laser;
@@ -66,6 +89,7 @@ namespace JndUfo
         public PerturbationController perturbation;
         public UfoController          ufo;
         public ExperimentOverlay      overlay;
+        public ShockwaveTrialRunner  shockwave;
 
         // ── Public state ─────────────────────────────────────────────────────
         /// <summary>True only while the run is live and shots should count.</summary>
@@ -79,6 +103,19 @@ namespace JndUfo
 
         /// <summary>Kept for the gameplay scripts that gate on "are we playing right now".</summary>
         public bool RoundActive => SessionActive;
+
+        /// <summary>
+        /// The trial clock, resolved lazily. GameManager creates it in its own Awake, and Unity
+        /// gives no ordering guarantee between two Awakes, so the reference caught in
+        /// ResolveReferences can legitimately still be null.
+        /// </summary>
+        ShockwaveTrialRunner Shockwave =>
+            shockwave != null ? shockwave : (shockwave = ShockwaveTrialRunner.Instance);
+
+        // Must stay spelled exactly as Side.ToString() would, or the logs' side column changes
+        // meaning between releases.
+        const string SideLeft  = "Left";
+        const string SideRight = "Right";
 
         // ── Private ──────────────────────────────────────────────────────────
         ExperimentLogger _logger;
@@ -145,33 +182,63 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// Prints the geometric chance-level hit rate so guessRate can be set from the actual
-        /// scene rather than guessed. Logged rather than applied: γ belongs in the config where
-        /// it is versioned with the rest of the study, and silently overriding a configured
-        /// value would make two sessions with the same CSV run different models.
+        /// Prints the chance-level hit rate for every block so guessRate can be set from the study
+        /// as it actually runs rather than guessed. Logged rather than applied: γ belongs in the
+        /// config where it is versioned with the rest of the study, and silently overriding a
+        /// configured value would make two sessions with the same CSV run different models.
+        ///
+        /// Per block, not once: chance level is a property of the TASK, and the two weapons pose
+        /// different ones. A laser block's γ is geometric — the odds of a blind shot landing in the
+        /// hit window. An shockwave block's is temporal — the best a participant who perceives
+        /// nothing can do by picking a moment to fire. One number cannot be right for both, so a
+        /// single check against block 1 would silently pass a wrong γ on every other row.
         /// </summary>
         void LogChanceHitRate()
         {
-            Camera cam = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
-            float fixedZ = ufo != null ? ufo.fixedZ : 0f;
-            float spawnFraction = towerManager != null ? towerManager.spawnWidthFraction : 1f;
-            float closeRadius = Config != null ? Config.closeRadius : 1f;
+            if (_blocks == null) return;
+            foreach (StudyConfig block in _blocks)
+                LogChanceHitRateFor(block);
+        }
 
-            if (GuessRateCalculator.TryCompute(cam, fixedZ, spawnFraction, closeRadius,
-                                                out float gamma, out string report))
+        void LogChanceHitRateFor(StudyConfig block)
+        {
+            if (block == null) return;
+
+            string tag  = $"block {block.blockIndex} ({block.weapon.ToString().ToLowerInvariant()})";
+            bool   ok;
+            float  gamma;
+            string report;
+
+            if (block.IsShockwave)
             {
-                Debug.Log(report);
-
-                float configured = Config != null ? CsvTable.GetFloat(Config.Row, "guessRate", -1f) : -1f;
-                if (configured >= 0f && Mathf.Abs(configured - gamma) > 0.02f)
-                    Debug.LogWarning($"[GuessRate] ExperimentConfig.csv has guessRate={configured:0.000} " +
-                                      $"but the scene implies {gamma:0.000}. A γ far from chance biases the " +
-                                      "threshold estimate — update the CSV unless this is deliberate.");
+                ok = ShockwaveGuessRate.TryCompute(block.swSpikeDelayMinSec, block.swSpikeDelayMaxSec,
+                                                     block.swWindowMinSec, block.swWindowMaxSec,
+                                                     out gamma, out _, out report);
             }
             else
             {
-                Debug.LogWarning("[GuessRate] Could not compute a chance hit rate (no camera?).");
+                Camera cam           = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
+                float  fixedZ        = ufo != null ? ufo.fixedZ : 0f;
+                float  spawnFraction = towerManager != null ? towerManager.spawnWidthFraction : 1f;
+
+                ok = GuessRateCalculator.TryCompute(cam, fixedZ, spawnFraction, block.closeRadius,
+                                                     out gamma, out report);
             }
+
+            if (!ok)
+            {
+                Debug.LogWarning($"[GuessRate] Could not compute a chance rate for {tag}.");
+                return;
+            }
+
+            Debug.Log($"[GuessRate] {tag}\n{report}");
+
+            float configured = CsvTable.GetFloat(block.Row, "guessRate", -1f);
+            if (configured >= 0f && Mathf.Abs(configured - gamma) > 0.02f)
+                Debug.LogWarning($"[GuessRate] ExperimentConfig.csv row {block.blockIndex} has " +
+                                  $"guessRate={configured:0.000} but {tag} implies {gamma:0.000}. A γ far " +
+                                  "from chance biases the threshold estimate — update the CSV unless " +
+                                  "this is deliberate.");
         }
 
         void OnDestroy()
@@ -190,6 +257,7 @@ namespace JndUfo
             if (scoreManager == null) scoreManager = FindAnyObjectByType<ScoreManager>();
             if (perturbation == null) perturbation = FindAnyObjectByType<PerturbationController>();
             if (ufo          == null) ufo          = FindAnyObjectByType<UfoController>();
+            if (shockwave   == null) shockwave   = FindAnyObjectByType<ShockwaveTrialRunner>();
         }
 
         // ── Session ──────────────────────────────────────────────────────────
@@ -223,12 +291,30 @@ namespace JndUfo
             yield return ThankYouAndQuit(dbBuild);
         }
 
+        /// <summary>
+        /// What the participant is asked to do this block. The two weapons are different tasks, so
+        /// the same prompt cannot introduce both — and the shockwave task in particular is not
+        /// discoverable: nothing on screen says a press before the stutter fails, so a participant
+        /// who is not told would spend their first trials learning it from penalties.
+        ///
+        /// Deliberately says nothing about how large the stutter will be, or when in the delay it
+        /// will land. Both are the thing being measured.
+        /// </summary>
+        string TaskInstruction() => Config != null && Config.IsShockwave
+            ? "Watch for the game to stutter, then fire IMMEDIATELY.\n" +
+              "Firing before the stutter fails the round, and so does waiting too long."
+            : "Shoot the hidden tower.";
+
+        string StartPrompt() =>
+            $"{TaskInstruction()}\n\nPress {startKey.ToString().ToUpperInvariant()} to start";
+
         IEnumerator RunBlock(int index)
         {
             string capLabel = Config.unityApplicationFps > 0
                 ? $"{Config.unityApplicationFps} FPS"
                 : "uncapped";
-            const string blockLabel = "MAIN ROUNDS";
+            string weaponLabel = Config.IsShockwave ? "SHOCKWAVE CANNON" : "LASER";
+            string blockLabel  = $"MAIN ROUNDS — {weaponLabel}";
 
             _stats = new SessionStats();
             _endReason = null;
@@ -258,8 +344,7 @@ namespace JndUfo
                 _logger.CurrentPhase = "practice";
                 perturbation?.SetPractice(true, Config.practiceStuttersMs[0]);
 
-                yield return WaitForStartKey("PRACTICE ROUND",
-                                              $"Press {startKey.ToString().ToUpperInvariant()} to start");
+                yield return WaitForStartKey($"PRACTICE — {weaponLabel}", StartPrompt());
 
                 BeginPhase(isPractice: true);
 
@@ -269,7 +354,7 @@ namespace JndUfo
                 for (int i = 0; i < practiceTrials; i++)
                 {
                     perturbation?.SetPractice(true, Config.practiceStuttersMs[i]);
-                    overlay.ShowBanner($"PRACTICE ROUND — shot {i + 1} of {practiceTrials}");
+                    overlay.ShowBanner($"PRACTICE — {weaponLabel} — round {i + 1} of {practiceTrials}");
 
                     int target = i + 1;
                     while (_roundNumber < target) yield return null;
@@ -277,6 +362,7 @@ namespace JndUfo
 
                 yield return EndPhase(isPractice: true);
                 overlay.HideBanner();
+                overlay.HideHint();
 
                 // Flushed here, during the pause between phases: disk I/O is free of
                 // consequences while no frame timing is being measured.
@@ -290,8 +376,7 @@ namespace JndUfo
             _logger.CurrentPhase = "main";
             _stats = new SessionStats();   // practice performance is not part of the result
 
-            yield return WaitForStartKey(blockLabel,
-                                          $"Press {startKey.ToString().ToUpperInvariant()} to start");
+            yield return WaitForStartKey(blockLabel, StartPrompt());
 
             _startedAt = DateTime.Now;
             BeginPhase(isPractice: false);
@@ -324,8 +409,13 @@ namespace JndUfo
             float jnd = perturbation != null && perturbation.ActiveStaircase != null
                 ? perturbation.ActiveStaircase.JndEstimate()
                 : float.NaN;
-            Debug.Log($"[ExperimentDirector] Block {index + 1}/{_blocks.Count} ({capLabel}) " +
-                      $"complete ({_endReason}) — JND estimate {jnd:0.0} ms.");
+            Debug.Log($"[ExperimentDirector] Block {index + 1}/{_blocks.Count} " +
+                      $"({Config.weapon.ToString().ToLowerInvariant()}, {capLabel}) " +
+                      $"complete ({_endReason}) — JND estimate {jnd:0.0} ms. " +
+                      (Config.IsShockwave
+                          ? $"{_stats.ShockwaveDetections} detected / {_stats.ShockwaveEarly} early / " +
+                            $"{_stats.ShockwaveTimeouts} timed out, mean RT {_stats.AvgReactionSec:0.000}s."
+                          : $"{_stats.ShotsHit}/{_stats.ShotsFired} hit."));
         }
 
         /// <summary>
@@ -355,7 +445,11 @@ namespace JndUfo
             _frameIndex           = 0;
             _roundNumber          = isPractice ? 0 : _mainRoundsCompleted;
             _lastShotTime         = 0f;
-            _spikeCountAtLastShot = 0;
+            // The live counter, not zero. PerturbationController.SpikeCount is reset once per
+            // BLOCK, but a block has two phases — so at the top of the main phase it still holds
+            // everything practice delivered, and baselining at zero would charge the first main
+            // trial with every practice stutter in its spikesSinceLastShot.
+            _spikeCountAtLastShot = perturbation != null ? perturbation.SpikeCount : 0;
             _hasPrevUfoPos        = false;
             _startRealtime        = Time.unscaledTime;
 
@@ -508,7 +602,13 @@ namespace JndUfo
 
             if (perturbation != null)
             {
-                t.side       = perturbation.CurrentSide.ToString();
+                // Interned constants rather than Enum.ToString(): this runs on EVERY rendered
+                // frame, and ToString() on an enum boxes and allocates a fresh string each time.
+                // At a 500 FPS cap that is ~500 short-lived strings a second, and the collection
+                // that eventually pays for them lands as a stutter competing with the deliberate
+                // one — the exact thing this project cannot afford to be sloppy about.
+                t.side       = perturbation.CurrentSide == PerturbationController.Side.Left
+                                   ? SideLeft : SideRight;
                 t.stimulusMs = perturbation.CurrentStimulusValue;
                 t.spikeFired = perturbation.SpikeFiredThisFrame;
                 t.stutterMs    = perturbation.SpikeFiredThisFrame ? perturbation.LastStutterMs : 0f;
@@ -521,21 +621,67 @@ namespace JndUfo
                 t.lapseEstimate    = perturbation.LapseEstimateValue;
             }
 
+            t.windowOpen = Shockwave != null && Shockwave.WindowOpen;
+
             t.shotFired = _shotFiredThisFrame;
             t.shotHitX  = _shotFiredThisFrame ? _shotHitXThisFrame : 0f;
             _shotFiredThisFrame = false;
 
             _stats.AddTick(t);
             _logger.QueueTick(t);
+
+            DrivePracticeHint(t.spikeFired);
+        }
+
+        /// <summary>
+        /// Runs the practice prompt: a standing "what to look for" line while the trial is live,
+        /// slammed into the alert state the instant a stutter is delivered.
+        ///
+        /// Gated on PracticeMode, which is the same flag that stops responses reaching the
+        /// posterior — so the coaching and the "this does not count" rule can never come apart. In
+        /// a main round any of this would hand the participant the stimulus they are being tested
+        /// on, which is why it is one gate rather than two.
+        /// </summary>
+        void DrivePracticeHint(bool spikeFired)
+        {
+            if (overlay == null) return;
+
+            if (!showPracticeHints || perturbation == null || !perturbation.PracticeMode)
+            {
+                overlay.HideHint();
+                return;
+            }
+
+            if (spikeFired)
+            {
+                overlay.FlashHint(
+                    Config != null && Config.IsShockwave ? shockwaveHintText : laserHintText,
+                    practiceHintSec);
+                return;
+            }
+
+            // Withdraw the standing prompt whenever the participant cannot act — the reveal, the
+            // WAIT gate, the pan. HideIdleHint leaves an alert in flight alone, so the flash the
+            // participant just answered still gets to finish.
+            if (laser != null && !laser.FiringEnabled) { overlay.HideIdleHint(); return; }
+
+            overlay.ShowIdleHint(idleHintText);
         }
 
         // ── Trial intake (called by GameManager) ─────────────────────────────
 
         /// <summary>
-        /// Records one trial. Called from <see cref="GameManager.HandleShotFired"/> after the
-        /// score is computed and after the staircase has been told the outcome.
+        /// Records one trial. Called from GameManager once the score is computed and the staircase
+        /// has been told the outcome.
+        ///
+        /// <paramref name="trial"/> carries how the trial was timed. That is incidental for a laser
+        /// trial — <see cref="TrialResolution.Laser"/> fills it with NaN — and it is the whole
+        /// record for an shockwave one, where the response is <em>when</em> the participant fired
+        /// rather than where. It is a required argument rather than an optional extra precisely so
+        /// a caller cannot quietly log an shockwave trial with its response variable missing.
         /// </summary>
-        public void RecordShot(Vector3 hitPoint, Vector3 towerBase, bool isHit, float totalScore)
+        public void RecordShot(Vector3 hitPoint, Vector3 towerBase, bool isHit, float totalScore,
+                                in TrialResolution trial)
         {
             if (!SessionActive || _logger == null || _stats == null) return;
 
@@ -571,11 +717,25 @@ namespace JndUfo
 
                 isHit      = isHit,
                 totalScore = totalScore,
-                hitX       = hitPoint.x,
-                missDistX  = hitPoint.x - towerBase.x,
+
+                // On an shockwave timeout no shot was fired, so there is no landing point to
+                // record. Blanked rather than filled with the UFO's resting position, which would
+                // be indistinguishable from a shot that happened to land there.
+                hitX       = trial.playerFired ? hitPoint.x : float.NaN,
+                missDistX  = trial.playerFired ? hitPoint.x - towerBase.x : float.NaN,
                 towerX     = towerBase.x,
                 ufoY       = ufo != null ? ufo.transform.position.y : 0f,
                 side       = perturbation != null ? perturbation.CurrentSide.ToString() : "",
+
+                outcome            = OutcomeLabel(trial.outcome),
+                playerFired        = trial.playerFired,
+                countedByStaircase = trial.countedByStaircase && _logger.CurrentPhase != "practice",
+                trialStartSec      = ToPhaseClock(trial.trialArmedAt),
+                spikeAtSec         = ToPhaseClock(trial.spikeAt),
+                firedAtSec         = ToPhaseClock(trial.firedAt),
+                reactionSec        = trial.firedAt - trial.spikeAt,   // NaN unless both happened
+                spikeDelaySec      = trial.delaySec,
+                windowSec          = trial.windowSec,
 
                 // Already refreshed by ReportShotResult, which GameManager calls before this —
                 // so these are the posterior *including* this response.
@@ -596,5 +756,22 @@ namespace JndUfo
             if (sc != null && sc.IsFinished && _endReason == null)
                 _endReason = StopRuleFor(sc);
         }
+
+        static string OutcomeLabel(ShockwaveOutcome o) => o switch
+        {
+            ShockwaveOutcome.Detected => "detected",
+            ShockwaveOutcome.Early    => "early",
+            ShockwaveOutcome.Timeout  => "timeout",
+            _                          => "shot",
+        };
+
+        /// <summary>
+        /// Rebases a wall-clock instant onto the phase clock the rest of the logs use, so a trial's
+        /// timings sit in the same units as <c>timeSinceStartSec</c> and can be read against the
+        /// frame rows directly. NaN passes straight through, which is how "this never happened"
+        /// reaches the CSV as an empty cell.
+        /// </summary>
+        float ToPhaseClock(float realtimeInstant) =>
+            float.IsNaN(realtimeInstant) ? float.NaN : realtimeInstant - _startRealtime;
     }
 }

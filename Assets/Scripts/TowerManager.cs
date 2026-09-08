@@ -389,7 +389,7 @@ namespace JndUfo
             bool isFullHide = targetNorm <= 0.01f;
             bool isFullShow = targetNorm >= 0.99f;
 
-            if (useLateralShockwave && (isFullHide || isFullShow) && ShockwaveSupported())
+            if (useLateralShockwave && (isFullHide || isFullShow) && FogShockwaveSupported())
             {
                 if (isFullHide)
                     yield return StartCoroutine(FogShockwaveOut(duration));
@@ -404,7 +404,7 @@ namespace JndUfo
 
         // Original vertical sink/rise. Kept as the fallback path for useLateralShockwave = false,
         // partial target values (not used by GameManager today, but kept generic), or particle
-        // systems the shockwave decided not to touch (see ShockwaveSupported).
+        // systems the shockwave decided not to touch (see FogShockwaveSupported).
         IEnumerator FogVerticalFade(float targetNorm, float duration)
         {
             float fromAlpha = _currentFogAlpha;
@@ -446,7 +446,7 @@ namespace JndUfo
         // space isn't handled (only Local/World are), and a hard particle-count cap keeps the
         // per-frame GetParticles/SetParticles cost bounded on whatever the fog prefab turns out
         // to be at runtime.
-        bool ShockwaveSupported()
+        bool FogShockwaveSupported()
         {
             if (_fogSystems == null || _fogSystems.Length == 0) return false;
 
@@ -1203,14 +1203,39 @@ namespace JndUfo
             if (hitParticlePrefab != null && _hitParticleInstance == null)
             {
                 _hitParticleInstance = Instantiate(hitParticlePrefab);
-                var m = _hitParticleInstance.main; m.loop = false;
+                MakeOneShot(_hitParticleInstance);
                 _hitParticleInstance.gameObject.SetActive(false);
             }
             if (explosionParticlePrefab != null && _explosionInstance == null)
             {
                 _explosionInstance = Instantiate(explosionParticlePrefab);
-                var m = _explosionInstance.main; m.loop = false;
+                MakeOneShot(_explosionInstance);
                 _explosionInstance.gameObject.SetActive(false);
+            }
+        }
+
+        /// <summary>
+        /// Turns an instance of an explosion/impact prefab into something that plays once and
+        /// burns out, instead of running for the rest of the session.
+        ///
+        /// Looping is a per particle SYSTEM setting, and these prefabs are several systems deep —
+        /// the stock EnergyExplosion is a root plus Embers, Lightning and Shockwave, and every one
+        /// of them ships with `looping` on. Clearing it on the root alone (which is what this used
+        /// to do) leaves the children emitting forever, so one impact keeps going long after the
+        /// blast that caused it. Walks the whole hierarchy instead.
+        ///
+        /// Public and static because <see cref="ShockwaveCannon"/> pools copies of these same two
+        /// prefabs and needs the identical treatment.
+        /// </summary>
+        public static void MakeOneShot(ParticleSystem ps)
+        {
+            if (ps == null) return;
+
+            var systems = ps.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
+            for (int i = 0; i < systems.Length; i++)
+            {
+                var m = systems[i].main;
+                m.loop = false;
             }
         }
 
@@ -1359,6 +1384,19 @@ namespace JndUfo
             Vector3 basePos = TowerBase;
             ApplySpreadPositions(basePos, basePos + Vector3.up * towerLaserHeight, _spreadProgress);
             SetTowerLaserAlpha(_currentFogAlpha > 0.01f ? 0f : 1f - _currentFogAlpha);
+        }
+
+        /// <summary>
+        /// Points the fog shockwave at <paramref name="p"/> without showing an impact burst there.
+        ///
+        /// For the shockwave weapon: the cannon has no landing point to mark — it levels the whole
+        /// plane, and its own chain of detonations has already shown that — but the fog bank still
+        /// has to be blown open from somewhere, and the UFO's position is where the blast started.
+        /// </summary>
+        public void SetFogShockwaveOrigin(Vector3 p)
+        {
+            float hitY = tower != null ? tower.transform.position.y : groundY;
+            _lastHitWorldPos = new Vector3(p.x, hitY, fixedZ);
         }
 
         public void ShowHitMarker(Vector3 p)

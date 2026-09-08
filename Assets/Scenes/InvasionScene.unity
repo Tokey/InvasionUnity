@@ -171,6 +171,7 @@ MonoBehaviour:
   fpsRight: 500
   spikeMagnitudeMs: 100
   spikeUseBusyWait: 1
+  earlyFirePolicy: 1
   latencyLeftMs: 0
   latencyRightMs: 300
   latencyRampDuration: 0.1
@@ -194,7 +195,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bbdafa4b5e3531c408ddd97cea7d987c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::JndUfo.ScoreManager
-  maxPoints: 100
+  hitPoints: 100
   closeRadius: 1
   missPoints: -10
 --- !u!114 &263729325
@@ -215,9 +216,14 @@ MonoBehaviour:
   scoreManager: {fileID: 263729323}
   uiManager: {fileID: 596289077}
   perturbation: {fileID: 263729322}
+  shockwave: {fileID: 0}
+  weaponIndicator: {fileID: 0}
   fogRetreatDuration: 0.2
   hitDisplayDuration: 1
   fogRestoreDuration: 0.4
+  readyBeatDuration: 1
+  cameraPanDuration: 0.55
+  cameraPanRange: 6
   skyboxSpinAmount: 60
 --- !u!4 &263729326
 Transform:
@@ -271,7 +277,12 @@ MonoBehaviour:
   hitVolume: 1
   miss: {fileID: 8300000, guid: a43f700f1e1311148b70f85ca9f2d979, type: 3}
   missVolume: 1
-  ufoEngine: {fileID: 8300000, guid: c48b9377f820da745a06b1f381952a21, type: 3}
+  shockwaveBlast: {fileID: 0}
+  shockwaveBlastVolume: 1
+  barrageExplosionVolume: 0.55
+  barrageSpatialBlend: 0.75
+  barrageVoices: 12
+  ufoEngine: {fileID: 8300000, guid: 73c64e048cfca0e49959051d3230b317, type: 3}
   ufoEngineVolume: 0.4
 --- !u!114 &263729329
 MonoBehaviour:
@@ -285,15 +296,21 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ab6c75e3bf8aee7449b422d16fc1c156, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::JndUfo.ExperimentDirector
-  participantId: 
   autoStart: 1
-  startRoundKey: 1
-  interRoundPauseSec: 3
+  startKey: 1
   maxRevealWaitSec: 6
   thankYouCountdownSec: 3
   quitOnSessionComplete: 1
-  fallbackRoundDurationSec: 120
-  includeSettingsInPlayerLog: 1
+  buildDatabaseOnFinish: 1
+  pythonExecutable: python
+  databaseScriptPath: Analysis/build_db.py
+  databaseWaitSec: 20
+  fallbackDurationSec: 300
+  showPracticeHints: 1
+  idleHintText: SPOT THE STUTTER
+  laserHintText: "STUTTER \u2014 FIRE HERE"
+  shockwaveHintText: "STUTTER \u2014 FIRE NOW"
+  practiceHintSec: 1.1
   gameManager: {fileID: 263729325}
   laser: {fileID: 875238946}
   towerManager: {fileID: 1121148176}
@@ -301,6 +318,7 @@ MonoBehaviour:
   perturbation: {fileID: 263729322}
   ufo: {fileID: 906968768}
   overlay: {fileID: 0}
+  shockwave: {fileID: 0}
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0
@@ -462,6 +480,15 @@ MonoBehaviour:
   shakeFrequency: 9
   shakeLateralBias: 0.45
   shakeNoiseBlend: 0.732
+  shockwaveShakeDuration: 1.8
+  shockwaveShakeMagnitude: 4.2
+  shockwaveShakeDecay: 1.9
+  shockwaveShakeFrequency: 2.2
+  shockwaveShakeNoiseBlend: 0.14
+  shockwaveShakeNoiseRate: 3.5
+  shockwaveShakeRoll: 12
+  shockwaveShakeKick: 3.5
+  shockwaveShakeKickDecay: 3
 --- !u!1 &355956065
 GameObject:
   m_ObjectHideFlags: 0
@@ -674,6 +701,7 @@ MonoBehaviour:
   gameManager: {fileID: 263729325}
   scoreText: {fileID: 1127966278}
   roundText: {fileID: 691038000}
+  hudFont: {fileID: 11400000, guid: 78c5dcc89e87b1846b0d3a18e00b4727, type: 2}
   debugText: {fileID: 1257439593}
   flashHold: 0.1
   flashFade: 0.2
@@ -684,10 +712,16 @@ MonoBehaviour:
   vignetteInnerRadius: 0.45
   vignetteResolution: 256
   scoreBeatPeak: 1.45
+  shockwaveFlashColor: {r: 0.75, g: 0.45, b: 1, a: 1}
+  shockwaveAlpha: 0.85
+  calloutShockwaveHitText: DESTROYED!
+  calloutShockwaveEarlyText: TOO EARLY!
+  calloutShockwaveLateText: TOO LATE!
+  calloutShockwaveFailColor: {r: 1, g: 0.68, b: 0.2, a: 1}
   calloutHitText: Hit!
   calloutMissText: Miss!
   calloutDuration: 0.3
-  calloutShakePixels: 22
+  calloutBounceDuration: 0.45
   calloutFontSize: 120
   calloutHitColor: {r: 0.25, g: 1, b: 0.4, a: 1}
   calloutMissColor: {r: 1, g: 0.25, b: 0.25, a: 1}
@@ -1133,6 +1167,7 @@ MonoBehaviour:
   beamWidth: 0.05
   beamDuration: 0.15
   beamFlashIntensity: 25
+  shockwaveCannon: {fileID: 0}
   fireOnLeftClick: 1
   altFireKey: 32
   pointerRenderer: {fileID: 1319306821}
@@ -1388,6 +1423,17 @@ MonoBehaviour:
   fogPosition: {x: -2, y: -3.8, z: -20}
   fogScale: {x: 3.5, y: 3, z: 2}
   fogHiddenY: -13
+  optimizeFog: 1
+  fogMaxParticles: 90
+  fogEmissionRate: 9
+  fogLifetime: 9
+  fogParticleSize: 13
+  fogDensity: 0.35
+  fogWidthPadding: 4
+  fogBandHeight: 3
+  fogBandDepth: 6
+  fogMaxScreenSize: 0.35
+  fogFollowsCamera: 1
   useLateralShockwave: 1
   blastStrength: 9
   blastFalloffRadius: 5

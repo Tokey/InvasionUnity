@@ -26,6 +26,10 @@ namespace JndUfo
         public ScoreManager scoreManager;
         public UIManager uiManager;
         public PerturbationController perturbation;
+        [Tooltip("Runs the shockwave task's trial clock. Auto-created on this object if empty.")]
+        public ShockwaveTrialRunner shockwave;
+        [Tooltip("Names the armed weapon at the top of the screen. Auto-created on this object if empty.")]
+        public WeaponIndicator weaponIndicator;
 
         [Header("Reveal Timing")]
         [Tooltip("How long the fog takes to fade out after a shot (seconds).")]
@@ -34,6 +38,10 @@ namespace JndUfo
         public float hitDisplayDuration = 1.5f;
         [Tooltip("How long the fog takes to fade back in before resetting.")]
         public float fogRestoreDuration = 0.4f;
+
+        [Tooltip("Seconds the READY starting gun holds and shakes after the scene has reset, " +
+                 "before firing is handed back. Set to 0 to hand it straight back with no beat.")]
+        [Min(0f)] public float readyBeatDuration = 1f;
 
         [Header("Camera Pan")]
         [Tooltip("Seconds the camera takes to slide to its new vantage point after a shot. " +
@@ -71,7 +79,27 @@ namespace JndUfo
 
             if (uiManager == null)
                 uiManager = FindAnyObjectByType<UIManager>();
+
+            if (perturbation == null)
+                perturbation = FindAnyObjectByType<PerturbationController>();
+
+            // Created unconditionally rather than only for shockwave blocks: which weapon a
+            // session runs is not known until the config loads, and the runner is inert on a laser
+            // block anyway (its live check requires an shockwave weapon).
+            if (shockwave == null) shockwave = FindAnyObjectByType<ShockwaveTrialRunner>();
+            if (shockwave == null) shockwave = gameObject.AddComponent<ShockwaveTrialRunner>();
+
+            // Same reasoning: built for every session, inert until a block arms a weapon. It reads
+            // PerturbationController.Weapon rather than being told, so it cannot disagree with the
+            // block config about which task is running.
+            if (weaponIndicator == null) weaponIndicator = FindAnyObjectByType<WeaponIndicator>();
+            if (weaponIndicator == null) weaponIndicator = gameObject.AddComponent<WeaponIndicator>();
         }
+
+        /// <summary>The block being played hands the participant the shockwave cannon, so trials
+        /// are resolved by timing rather than by aim.</summary>
+        public bool IsShockwaveBlock =>
+            perturbation != null && perturbation.Weapon == WeaponKind.Shockwave;
 
         void OnApplicationFocus(bool focused)
         {
@@ -112,10 +140,17 @@ namespace JndUfo
 
         }
 
-        IEnumerator RevealSequence(Vector3 hitPoint)
+        /// <param name="showHitMarker">False for shockwave trials. The small impact burst marks
+        /// where a shot landed, and the cannon has no landing point — it levels the whole plane, and
+        /// the cannon's own chain of detonations has already shown that. Dropping a single marker
+        /// at the UFO's X would quietly re-introduce the "where you were mattered" reading the
+        /// weapon exists to remove. The fog shockwave still centres on the same point, since the
+        /// bank has to be blown open from somewhere.</param>
+        IEnumerator RevealSequence(Vector3 hitPoint, bool showHitMarker = true)
         {
             // 1. Show hit marker immediately at the shot landing point.
-            towerManager.ShowHitMarker(hitPoint);
+            if (showHitMarker) towerManager.ShowHitMarker(hitPoint);
+            else               towerManager.SetFogShockwaveOrigin(hitPoint);
 
             // 2. Fog retreats.
             yield return StartCoroutine(towerManager.FadeFog(0f, fogRetreatDuration));
@@ -129,7 +164,15 @@ namespace JndUfo
             // 5. Hide tower and marker before fog returns.
             towerManager.HideTowerAndMarker();
 
-            // 6. Fog returns; skybox spins simultaneously to sell the location change.
+            // 6. The reset gate goes up here and stays up until firing is handed back. Two jobs:
+            //    it tells the participant not to act yet, and it masks the reset. Everything from
+            //    here to the end of the pan is scene churn — fog, skybox, tower move, camera slide
+            //    — and a long frame anywhere in it is visible motion the participant has no way to
+            //    tell apart from a deliberate stutter. Under the veil there is nothing moving to
+            //    judge, so an accidental hitch simply cannot be read as a stimulus.
+            Overlay?.ShowGateHold();
+
+            // Fog returns; skybox spins simultaneously to sell the location change.
             float spinDir = Random.value > 0.5f ? 1f : -1f;
             StartCoroutine(SpinSkybox(skyboxSpinAmount * spinDir, fogRestoreDuration));
             yield return StartCoroutine(towerManager.FadeFog(1f, fogRestoreDuration));
@@ -146,8 +189,38 @@ namespace JndUfo
             // Don't hand firing back if the round's timer expired while this reveal was playing —
             // the director has already closed the round out.
             bool roundOver = ExperimentDirector.Instance != null && !ExperimentDirector.Instance.RoundActive;
-            if (laser != null && !roundOver) laser.SetFiringEnabled(true);
+            if (roundOver)
+            {
+                Overlay?.HideGate();
+                _revealCoroutine = null;
+                yield break;
+            }
+
+            // "GO!", shaken, then the gate lifts and firing comes back on the same frame — so the
+            // starting gun the participant sees and the instant their shots start counting are the
+            // same event. The shockwave clock arms off this edge too, which is what stops a trial
+            // from quietly beginning while the camera was still moving.
+            if (Overlay != null) yield return Overlay.GoBeat(readyBeatDuration);
+
+            if (laser != null) laser.SetFiringEnabled(true);
             _revealCoroutine = null;
+        }
+
+        /// <summary>
+        /// The director's message board, resolved lazily. Null in a hand-played scene with no
+        /// director, in which case the reset gate is simply skipped.
+        /// </summary>
+        /// Returns a real null rather than Unity's fake-null placeholder, so the `?.` calls above
+        /// short-circuit properly — `?.` bypasses UnityEngine.Object's overloaded == and would
+        /// happily invoke a method on a destroyed object.
+        ExperimentOverlay Overlay
+        {
+            get
+            {
+                ExperimentDirector d = ExperimentDirector.Instance;
+                if (d == null || d.overlay == null) return null;
+                return d.overlay;
+            }
         }
 
         /// <summary>
@@ -246,53 +319,130 @@ namespace JndUfo
 
         void HandleShotFired(Vector3 hitPoint, bool hitGround)
         {
+            // Classified before anything else touches the trial: ClassifyPlayerFire closes the
+            // shockwave clock, and letting the timeout also fire for a trial the participant
+            // already answered would score the same trial twice.
+            ShockwaveOutcome outcome = IsShockwaveBlock && shockwave != null
+                ? shockwave.ClassifyPlayerFire()
+                : ShockwaveOutcome.None;
+
+            ResolveTrial(hitPoint, outcome);
+        }
+
+        /// <summary>
+        /// Ends an shockwave trial that ran out of time. Called by
+        /// <see cref="ShockwaveTrialRunner"/> when the response window closes unanswered — the
+        /// one path where a trial completes with no shot at all, so it cannot arrive through
+        /// LaserFirer's event like every other outcome.
+        /// </summary>
+        public void ResolveShockwaveTimeout()
+        {
+            // No shot was fired, so there is no landing point. The UFO's own position stands in:
+            // it is where the cannon *would* have gone off, which is what the fog shockwave needs a
+            // centre for, and the shot log records the absence explicitly (playerFired = false)
+            // rather than leaving this position to be mistaken for a landed shot.
+            Vector3 where = ufo != null ? ufo.transform.position : Vector3.zero;
+            ResolveTrial(where, ShockwaveOutcome.Timeout);
+        }
+
+        /// <summary>
+        /// The single place a trial ends, whichever weapon and whichever outcome produced it:
+        /// score it, tell QUEST+, show the result, log it, and start the reveal.
+        ///
+        /// The two weapons differ only in what decides <c>isHit</c>. The laser decides it by aim —
+        /// landing a shot on the fog-hidden tower means the participant tracked it through the
+        /// stutter. Shockwave decides it by timing — answering inside the response window means
+        /// they saw the stutter arrive. Everything downstream of that one decision is shared.
+        /// </summary>
+        void ResolveTrial(Vector3 hitPoint, ShockwaveOutcome outcome)
+        {
             if (scoreManager == null)
                 scoreManager = FindAnyObjectByType<ScoreManager>();
 
-            Debug.Log($"[GameManager] HandleShotFired received hitPoint={hitPoint} hitGround={hitGround} scoreManager={(scoreManager != null ? scoreManager.name : "null")}");
+            bool isShockwave = outcome != ShockwaveOutcome.None;
+            bool playerFired  = outcome != ShockwaveOutcome.Timeout;
 
             if (laser != null) laser.SetFiringEnabled(false);
-
-            if (towerManager != null && towerManager.rig != null)
-                towerManager.rig.Shake(hitPoint);
 
             Vector3 towerBase = towerManager != null ? towerManager.MainTowerPosition : Vector3.zero;
 
             float shotScore = 0f, total = 0f, dist = 0f;
-            if (scoreManager != null)
+            bool  isHit;
+
+            if (isShockwave)
             {
-                shotScore = scoreManager.ScoreShot(hitPoint, towerBase);
-                total = scoreManager.TotalScore;
-                dist = scoreManager.LastShotDistance;
+                isHit = outcome == ShockwaveOutcome.Detected;
+
+                // Recorded for the logs, never scored — see ScoreManager.ScoreOutcome. A timeout
+                // has no shot to measure at all.
+                dist = playerFired ? Mathf.Abs(hitPoint.x - towerBase.x) : float.NaN;
+
+                if (scoreManager != null)
+                {
+                    shotScore = scoreManager.ScoreOutcome(isHit, playerFired ? dist : 0f);
+                    total     = scoreManager.TotalScore;
+                }
+
+                // The blast's own shake is fired by ShockwaveCannon at detonation, so there is
+                // nothing to add here — and a timeout never detonates, so nothing shakes at all.
+            }
+            else
+            {
+                if (towerManager != null && towerManager.rig != null)
+                    towerManager.rig.Shake(hitPoint);
+
+                if (scoreManager != null)
+                {
+                    shotScore = scoreManager.ScoreShot(hitPoint, towerBase);
+                    total     = scoreManager.TotalScore;
+                    dist      = scoreManager.LastShotDistance;
+                }
+
+                // isHit = the shot landed on the (hidden) tower, i.e. the player knew where it was.
+                // For FT mode this doubles as the detection signal: landing the shot means they
+                // noticed the stutter and could still place their aim; missing means they didn't
+                // notice it and got thrown off blind. See QuestPlusStaircase's class doc for how
+                // that maps onto its psychometric model.
+                isHit = scoreManager != null && shotScore >= scoreManager.HitPoints;
             }
 
             if (uiManager != null)
             {
-                uiManager.DisplayShotResult(shotScore, total, dist, hitPoint, towerBase);
+                if (isShockwave) uiManager.DisplayShockwaveResult(outcome, total);
+                else              uiManager.DisplayShotResult(shotScore, total, dist, hitPoint, towerBase);
             }
 
-            // isHit = the shot landed on the (hidden) tower, i.e. the player knew where it was.
-            // For FT mode this doubles as the detection signal: landing the shot means they
-            // noticed the stutter and could still place their aim; missing means they didn't
-            // notice it and got thrown off blind. See QuestPlusStaircase's class doc for how
-            // that maps onto its psychometric model.
-            bool isHit = scoreManager != null && shotScore >= scoreManager.HitPoints;
-            if (perturbation != null) perturbation.ReportShotResult(isHit);
+            // An anticipatory press may or may not be evidence about the threshold — see
+            // EarlyFirePolicy. Everything else always is.
+            bool counted = !isShockwave || shockwave == null ||
+                            shockwave.CountsTowardStaircase(outcome);
+            if (perturbation != null) perturbation.ReportShotResult(isHit, counted);
 
-            // Blast + hit/miss sting.
-            if (AudioManager.Instance != null) AudioManager.Instance.PlayShotOutcome(isHit);
+            if (AudioManager.Instance != null)
+            {
+                // The shockwave barrage has already played from the cannon; only the hit sting is
+                // left to add. The miss sting rides with the callout in UIManager either way.
+                if (isShockwave) { if (isHit) AudioManager.Instance.PlayHit(); }
+                else              AudioManager.Instance.PlayShotOutcome(isHit);
+            }
 
-            Debug.Log($"[GameManager] Shot fired. hitPoint={hitPoint} score={shotScore} total={total} distance={dist} isHit={isHit}");
+            Debug.Log($"[GameManager] Trial resolved. outcome={outcome} hitPoint={hitPoint} " +
+                      $"score={shotScore} total={total} distance={dist} isHit={isHit} counted={counted}");
 
             // Logged after ReportShotResult so the QUEST+ figures in the shot row are the
             // posterior *including* this response, not the one it was chosen from.
             if (ExperimentDirector.Instance != null)
-                ExperimentDirector.Instance.RecordShot(hitPoint, towerBase, isHit, total);
+            {
+                TrialResolution trial = isShockwave && shockwave != null
+                    ? shockwave.Snapshot(outcome, counted)
+                    : TrialResolution.Laser(Time.realtimeSinceStartup);
+                ExperimentDirector.Instance.RecordShot(hitPoint, towerBase, isHit, total, trial);
+            }
 
             if (towerManager != null)
             {
                 if (_revealCoroutine != null) StopCoroutine(_revealCoroutine);
-                _revealCoroutine = StartCoroutine(RevealSequence(hitPoint));
+                _revealCoroutine = StartCoroutine(RevealSequence(hitPoint, showHitMarker: !isShockwave));
             }
         }
     }

@@ -37,6 +37,52 @@ namespace JndUfo
         public bool  isHit;                // landed within closeRadius of the tower base
         public float totalScore;           // running score after this shot
 
+        // ── Shockwave trial timing ──────────────────────────────────────────
+        // Empty / NaN on a laser block, where the stutter is triggered by the participant's own
+        // movement and there is no window to answer it in.
+
+        /// <summary>How the trial ended: <c>shot</c> (laser), or <c>detected</c> / <c>early</c> /
+        /// <c>timeout</c> (shockwave). <c>early</c> and <c>timeout</c> are both misses, but they
+        /// are opposite mistakes, so they must not be collapsed in the log the way isHit does.</summary>
+        public string outcome;
+
+        /// <summary>False only for an shockwave timeout, where the trial completed with no shot.
+        /// Everything positional in this row is the UFO's resting position rather than a landing
+        /// point when this is false.</summary>
+        public bool playerFired;
+
+        /// <summary>Whether this response reached the QUEST+ posterior. False for practice trials
+        /// and for early fires discarded under EarlyFirePolicy.DiscardAndRetry — both are logged in
+        /// full, and any analysis that reconstructs the staircase must filter on this.</summary>
+        public bool countedByStaircase;
+
+        /// <summary>Phase-relative time the trial armed — the instant the delay started counting.</summary>
+        public float trialStartSec;
+
+        /// <summary>
+        /// Phase-relative time the stutter finished being delivered — when the spike was thrown.
+        ///
+        /// Measured at the END of the stutter, not the start: it blocks the main thread, so the
+        /// participant cannot have reacted to it until the frame after it completes, and dating it
+        /// from the start would credit them with a reaction time shorter than the stimulus itself.
+        /// NaN when no stutter ran this trial, which is exactly the early-fire case.
+        /// </summary>
+        public float spikeAtSec;
+
+        /// <summary>Phase-relative time the participant fired. NaN on a timeout.</summary>
+        public float firedAtSec;
+
+        /// <summary>firedAtSec - spikeAtSec: the response time. NaN unless a stutter was delivered
+        /// AND answered, so it is defined only for detections.</summary>
+        public float reactionSec;
+
+        /// <summary>The delay this trial drew for its stutter (s) — the interval the participant
+        /// had to sit through. Randomised per trial, so it cannot be recovered from the config.</summary>
+        public float spikeDelaySec;
+
+        /// <summary>The response window this trial drew (s). Also randomised per trial.</summary>
+        public float windowSec;
+
         /// <summary>Where the shot actually landed on X.
         ///
         /// Logged rather than inferred: the beam's direction and origin are Inspector fields on
@@ -99,6 +145,16 @@ namespace JndUfo
         public float stimulusMs;           // stutter size QUEST+ currently proposes
         public bool  spikeFired;           // a stutter was executed at the end of this frame
         public float stutterMs;            // its measured magnitude (0 when spikeFired is false)
+
+        /// <summary>
+        /// Shockwave only: the response window was open on this frame, so a press here would
+        /// have counted as a detection.
+        ///
+        /// This is what makes the frame log answer "was the participant able to respond yet?"
+        /// without reconstructing the window from the shot row's timings — and it is the column
+        /// that shows an early press sitting in the run of frames before the window ever opened.
+        /// </summary>
+        public bool windowOpen;
 
         // ── Live experiment state ────────────────────────────────────────────
         public float threshEstimateMs;     // θ̂ so far

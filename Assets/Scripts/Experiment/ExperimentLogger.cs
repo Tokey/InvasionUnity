@@ -56,6 +56,7 @@ namespace JndUfo
         string      _fpsCapCell      = "";
         string      _testModeCell    = "";
         string      _closeRadiusCell = "";
+        string      _weaponCell      = "";
 
         /// <summary>
         /// Wall-clock instant that <c>timeSinceStartSec</c> counts from, stamped onto every
@@ -74,7 +75,17 @@ namespace JndUfo
         readonly string _sessionPath, _shotPath, _playerPath;
 
         // Buffered during the session, flushed at the end.
-        readonly List<TickSample> _ticks = new List<TickSample>(16384);
+        //
+        // The tick buffer is sized for a whole phase up front, and generously. A List doubles when
+        // it fills, and doubling this one means allocating a multi-megabyte array and copying the
+        // old one into it — tens of milliseconds, on the main thread, at an unpredictable moment
+        // mid-round. That is indistinguishable from the stimulus, so it is not enough for the
+        // resize to be rare: it has to not happen. 262144 rows covers ~8.5 minutes at the 500 FPS
+        // cap, and the one allocation it costs happens at session start, before anything is being
+        // measured. Growth past it still works, it just costs what it always did.
+        const int TickCapacity = 262144;
+
+        readonly List<TickSample> _ticks = new List<TickSample>(TickCapacity);
         readonly List<ShotSample> _shots = new List<ShotSample>(256);
 
         /// <param name="firstBlock">Only supplies the cfg_* column *names* for the headers —
@@ -124,26 +135,29 @@ namespace JndUfo
 
             WriteLine(_shotPath, CsvTable.Join(Concat(new[]
             {
-                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "closeRadius",
+                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "closeRadius", "weapon",
                 "phase", "phaseStartIso", "roundNumber",
                 "timeSinceStartSec", "timeSinceLastShotSec",
                 "stimulusMs", "spikesSinceLastShot",
                 "stuttersMs", "stutterMeanMs", "stutterSdMs", "stutterMinMs", "stutterMaxMs",
                 "isHit", "totalScore",
+                "outcome", "playerFired", "countedByStaircase",
+                "trialStartSec", "spikeAtSec", "firedAtSec", "reactionSec",
+                "spikeDelaySec", "windowSec",
                 "hitX", "missDistX", "towerX", "ufoY", "side",
                 "threshEstimateMs", "sd", "slopeEstimate", "lapseEstimate",
             }, cfg)), append: false);
 
             WriteLine(_playerPath, CsvTable.Join(Concat(new[]
             {
-                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "closeRadius",
+                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "closeRadius", "weapon",
                 "phase", "phaseStartIso", "roundNumber",
                 "frameIndex", "timeSinceStartSec", "unscaledDeltaMs",
                 "mouseX", "mouseY", "mouseDeltaX", "mouseDeltaY",
                 "ufoX", "ufoY", "towerX", "side",
                 "leftButtonDown", "leftButtonPressed", "fireKeyDown",
                 "shotFired", "shotHitX",
-                "stimulusMs", "spikeFired", "stutterMs",
+                "stimulusMs", "spikeFired", "stutterMs", "windowOpen",
                 "threshEstimateMs", "sd", "slopeEstimate", "lapseEstimate",
                 "accuracy", "score",
             }, cfg)), append: false);
@@ -170,6 +184,13 @@ namespace JndUfo
             // isHit, so a shot log without it can't be re-scored.
             _testModeCell    = block != null ? block.testMode.ToString() : "";
             _closeRadiusCell = block != null ? CsvTable.F(block.closeRadius, 3) : "";
+
+            // weapon IS a config column, so it already rides along in the cfg_* echo. Promoted to
+            // a first-class column anyway because it decides what every other column in the row
+            // MEANS: on an shockwave block missDistX is incidental and the reaction columns carry
+            // the response, on a laser block it is the other way round. That distinction should not
+            // require reading a cfg_ prefix to find.
+            _weaponCell = block != null ? block.weapon.ToString().ToLowerInvariant() : "";
         }
 
         public void QueueTick(in TickSample t) => _ticks.Add(t);
@@ -206,7 +227,7 @@ namespace JndUfo
             WriteLine(_sessionPath, CsvTable.Join(Concat(new[]
             {
                 // identity & timing
-                "sessionId", "blockIndex", "unityApplicationFps", "testMode",
+                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "weapon",
                 "startIso", "endIso", "sessionDurationSec", "playDurationSec", "endReason",
                 // QUEST+ result
                 "jndEstimateMs", "sd", "slopeEstimate", "lapseEstimate",
@@ -214,6 +235,12 @@ namespace JndUfo
                 // performance
                 "shotsFired", "shotsHit", "accuracy", "score",
                 "shotsPerMinute", "avgShotIntervalSec",
+                // Stutters preceding each response — the session-level summary of the shot log's
+                // spikesSinceLastShot column. Meaningful for both weapons; see SessionStats.
+                "shotsBeforeSpike", "shotsAfterSpike", "avgSpikesBeforeShot",
+                // shockwave trial outcomes (all zero on a laser block)
+                "swDetections", "swEarlyFires", "swTimeouts", "trialsNotCounted",
+                "avgReactionSec", "sdReactionSec", "minReactionSec", "maxReactionSec",
                 // miss geometry, Unity world units on X
                 "cumMissDistX", "avgMissDistX",
                 "cumMissDistXMissesOnly", "avgMissDistXMissesOnly",
@@ -232,6 +259,7 @@ namespace JndUfo
             {
                 CsvTable.I(_sessionId), CsvTable.I(_blockIndex), _fpsCapCell,
                 _config != null ? _config.testMode.ToString() : "",
+                _weaponCell,
                 startedAt.ToString("o", CsvTable.Ci), endedAt.ToString("o", CsvTable.Ci),
                 CsvTable.F((float)(endedAt - startedAt).TotalSeconds, 3),
                 CsvTable.F(stats.ElapsedSeconds, 3),
@@ -247,6 +275,14 @@ namespace JndUfo
                 CsvTable.I(stats.ShotsFired), CsvTable.I(stats.ShotsHit),
                 CsvTable.F(stats.Accuracy, 4), CsvTable.F(stats.Score, 2),
                 CsvTable.F(stats.ShotsPerMinute, 3), CsvTable.F(stats.AvgShotIntervalSec, 3),
+
+                CsvTable.I(stats.ShotsBeforeSpike), CsvTable.I(stats.ShotsAfterSpike),
+                CsvTable.F(stats.AvgSpikesBeforeShot, 3),
+
+                CsvTable.I(stats.ShockwaveDetections), CsvTable.I(stats.ShockwaveEarly),
+                CsvTable.I(stats.ShockwaveTimeouts),   CsvTable.I(stats.TrialsNotCounted),
+                CsvTable.F(stats.AvgReactionSec, 4), CsvTable.F(stats.SdReactionSec, 4),
+                CsvTable.F(stats.MinReactionSec, 4), CsvTable.F(stats.MaxReactionSec, 4),
 
                 CsvTable.F(stats.CumMissDistX, 4), CsvTable.F(stats.AvgMissDistX, 4),
                 CsvTable.F(stats.CumMissDistXMissesOnly, 4), CsvTable.F(stats.AvgMissDistXMisses, 4),
@@ -288,7 +324,7 @@ namespace JndUfo
                     foreach (ShotSample s in _shots)
                     {
                         w.Cell(sessionId).Cell(blockIdx).Cell(_fpsCapCell)
-                         .Cell(_testModeCell).Cell(_closeRadiusCell)
+                         .Cell(_testModeCell).Cell(_closeRadiusCell).Cell(_weaponCell)
                          .Cell(CurrentPhase).Cell(phaseIso).Cell(s.roundNumber)
                          .Cell(s.timeSinceStartSec, 4).Cell(s.timeSinceLastShotSec, 4)
                          .Cell(s.stimulusMs, 3).Cell(s.spikesSinceLastShot)
@@ -296,6 +332,12 @@ namespace JndUfo
                          .Cell(s.stutterMeanMs, 3).Cell(s.stutterSdMs, 3)
                          .Cell(s.stutterMinMs, 3).Cell(s.stutterMaxMs, 3)
                          .Cell(s.isHit).Cell(s.totalScore, 2)
+                         // Reaction times are the shockwave task's response variable, so they get
+                         // millisecond resolution rather than the 3 decimals the rest of the row uses.
+                         .Cell(s.outcome).Cell(s.playerFired).Cell(s.countedByStaircase)
+                         .Cell(s.trialStartSec, 4).Cell(s.spikeAtSec, 4)
+                         .Cell(s.firedAtSec, 4).Cell(s.reactionSec, 4)
+                         .Cell(s.spikeDelaySec, 4).Cell(s.windowSec, 4)
                          .Cell(s.hitX, 4)
                          .Cell(s.missDistX, 4).Cell(s.towerX, 4).Cell(s.ufoY, 4).Cell(s.side)
                          .Cell(s.threshEstimateMs, 3).Cell(s.sd, 3)
@@ -324,7 +366,7 @@ namespace JndUfo
                     foreach (TickSample t in _ticks)
                     {
                         w.Cell(sessionId).Cell(blockIdx).Cell(_fpsCapCell)
-                         .Cell(_testModeCell).Cell(_closeRadiusCell)
+                         .Cell(_testModeCell).Cell(_closeRadiusCell).Cell(_weaponCell)
                          .Cell(CurrentPhase).Cell(phaseIso).Cell(t.roundNumber)
                          .Cell(t.frameIndex).Cell(t.timeSinceStartSec, 5).Cell(t.unscaledDeltaMs, 4)
                          .Cell(t.mousePos.x, 2).Cell(t.mousePos.y, 2)
@@ -333,6 +375,7 @@ namespace JndUfo
                          .Cell(t.leftDown).Cell(t.leftPressedThisFrame).Cell(t.fireKeyDown)
                          .Cell(t.shotFired).Cell(t.shotHitX, 4)
                          .Cell(t.stimulusMs, 3).Cell(t.spikeFired).Cell(t.stutterMs, 3)
+                         .Cell(t.windowOpen)
                          .Cell(t.threshEstimateMs, 3).Cell(t.sd, 3)
                          .Cell(t.slopeEstimate, 3).Cell(t.lapseEstimate, 4)
                          .Cell(t.accuracy, 4).Cell(t.score, 2)

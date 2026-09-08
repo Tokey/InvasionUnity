@@ -61,6 +61,61 @@ namespace JndUfo
         public float TotalStutterMs  { get; private set; }
         public float LastStimulusMs { get; private set; } = float.NaN;
 
+        // ── Shockwave trials ────────────────────────────────────────────────
+        // All zero on a laser block. Early and late failures are counted apart because they are
+        // opposite mistakes: a run full of early fires means the participant is guessing the
+        // rhythm, a run full of timeouts means they genuinely could not see the stutter, and
+        // "accuracy" alone reads identically for both.
+
+        /// <summary>Trials answered inside the response window.</summary>
+        public int ShockwaveDetections { get; private set; }
+        /// <summary>Trials ended by an anticipatory press, before the stutter ran.</summary>
+        public int ShockwaveEarly      { get; private set; }
+        /// <summary>Trials where the window closed unanswered.</summary>
+        public int ShockwaveTimeouts   { get; private set; }
+        /// <summary>Trials that were logged but withheld from the QUEST+ posterior.</summary>
+        public int TrialsNotCounted     { get; private set; }
+
+        readonly List<float> _reactionTimes = new List<float>(128);   // detections only
+
+        // ── Spikes preceding each response ───────────────────────────────────
+        //
+        // Per TRIAL, not per session: the shot row's spikesSinceLastShot counts the stutters
+        // delivered between the previous trial's response and this one, which is exactly the set
+        // of stimuli this response could have been an answer to. Summarised here so the session
+        // row states, without a pass over the shot log, whether the participant was answering
+        // something or firing into silence.
+        //
+        // It reads differently per weapon, and both readings are useful:
+        //
+        //   Laser       stutters fire on tower crossings, so this is how many crossings the
+        //               participant flew before taking the shot. Zero means they shot without
+        //               ever crossing the tower — a trial with no stimulus in it at all.
+        //   Shockwave  the stutter is on a timer and there is exactly one per trial, so this is
+        //               0 or 1, and zero is precisely the anticipatory press. ShotsBeforeSpike
+        //               is therefore the early-fire count arrived at independently of how the
+        //               trial was classified, which is what makes the two cross-checkable.
+
+        /// <summary>Trials answered with NO stutter delivered since the previous trial — the shot
+        /// came before any stimulus it could have been a response to.</summary>
+        public int ShotsBeforeSpike { get; private set; }
+
+        /// <summary>Trials answered after at least one stutter had been delivered.</summary>
+        public int ShotsAfterSpike  { get; private set; }
+
+        readonly List<int> _spikesBeforeShot = new List<int>(128);
+
+        /// <summary>Mean stutters delivered per trial before the response. 0 when there are no
+        /// trials.</summary>
+        public float AvgSpikesBeforeShot => MeanInt(_spikesBeforeShot);
+
+        /// <summary>Mean response time over detections, in seconds. 0 when there are none.</summary>
+        public float AvgReactionSec => Mean(_reactionTimes);
+        /// <summary>Fastest response over detections. NaN when there are none.</summary>
+        public float MinReactionSec { get; private set; } = float.NaN;
+        public float MaxReactionSec { get; private set; } = float.NaN;
+        public float SdReactionSec  => StdDev(_reactionTimes);
+
         // ── Feed ─────────────────────────────────────────────────────────────
 
         public void AddTick(in TickSample t)
@@ -103,22 +158,59 @@ namespace JndUfo
             if (s.isHit) ShotsHit++;
             Score = s.totalScore;
 
+            switch (s.outcome)
+            {
+                case "detected": ShockwaveDetections++; break;
+                case "early":    ShockwaveEarly++;      break;
+                case "timeout":  ShockwaveTimeouts++;   break;
+            }
+            if (!s.countedByStaircase) TrialsNotCounted++;
+
+            if (!float.IsNaN(s.reactionSec))
+            {
+                _reactionTimes.Add(s.reactionSec);
+                if (float.IsNaN(MinReactionSec) || s.reactionSec < MinReactionSec) MinReactionSec = s.reactionSec;
+                if (float.IsNaN(MaxReactionSec) || s.reactionSec > MaxReactionSec) MaxReactionSec = s.reactionSec;
+            }
+
+            // Pacing is meaningful for every trial, including one that ended without a shot.
+            _shotIntervals.Add(s.timeSinceLastShotSec);
+
+            // So is what preceded it — an shockwave timeout is a trial where the stutter DID run
+            // and went unanswered, and dropping it here would make ShotsAfterSpike disagree with
+            // the trial count for no reason.
+            int before = Mathf.Max(0, s.spikesSinceLastShot);
+            _spikesBeforeShot.Add(before);
+            if (before == 0) ShotsBeforeSpike++; else ShotsAfterSpike++;
+
+            // Miss geometry is not. An shockwave timeout has no shot and so no landing point;
+            // folding it in as zero would read as a perfectly-centred shot and drag every
+            // miss-distance average toward the tower. Skipped, and counted separately below so the
+            // averages divide by the trials that actually contributed.
+            if (float.IsNaN(s.missDistX)) return;
+
             float absX = Mathf.Abs(s.missDistX);
             CumMissDistX += absX;
+            _shotsWithGeometry++;
             if (absX > MaxMissDistX) MaxMissDistX = absX;
-            if (!s.isHit) CumMissDistXMissesOnly += absX;
+            if (!s.isHit) { CumMissDistXMissesOnly += absX; _missesWithGeometry++; }
 
             _missDistances.Add(absX);
             _sortedMissDistances = null;
-            _shotIntervals.Add(s.timeSinceLastShotSec);
         }
+
+        // Trials that produced a landing point. Equal to ShotsFired / ShotsMissed on a laser block
+        // and on shockwave trials the participant answered; lower where timeouts ended trials with
+        // no shot at all.
+        int _shotsWithGeometry;
+        int _missesWithGeometry;
 
         // ── Derived ──────────────────────────────────────────────────────────
 
         public float Accuracy => ShotsFired > 0 ? (float)ShotsHit / ShotsFired : 0f;
 
-        public float AvgMissDistX        => ShotsFired  > 0 ? CumMissDistX / ShotsFired : 0f;
-        public float AvgMissDistXMisses  => ShotsMissed > 0 ? CumMissDistXMissesOnly / ShotsMissed : 0f;
+        public float AvgMissDistX        => _shotsWithGeometry  > 0 ? CumMissDistX / _shotsWithGeometry : 0f;
+        public float AvgMissDistXMisses  => _missesWithGeometry > 0 ? CumMissDistXMissesOnly / _missesWithGeometry : 0f;
         public float SdMissDistX         => StdDev(_missDistances);
         public float MedianMissDistX     => MissPercentile(0.5f);
 
@@ -145,6 +237,14 @@ namespace JndUfo
             double sum = 0.0;
             for (int i = 0; i < v.Count; i++) sum += v[i];
             return (float)(sum / v.Count);
+        }
+
+        static float MeanInt(List<int> v)
+        {
+            if (v.Count == 0) return 0f;
+            long sum = 0;
+            for (int i = 0; i < v.Count; i++) sum += v[i];
+            return (float)((double)sum / v.Count);
         }
 
         static float StdDev(List<float> v)

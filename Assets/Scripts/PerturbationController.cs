@@ -77,6 +77,18 @@ namespace JndUfo
         [Tooltip("Busy-wait (like a compute hitch) vs Thread.Sleep (yields the thread).")]
         public bool spikeUseBusyWait = true;
 
+        [Header("Shockwave")]
+        [Tooltip("What an anticipatory press — one made before the stutter has run — is worth to " +
+                 "QUEST+.\n\n" +
+                 "CountAsMiss: the trial fails and the posterior hears 'did not notice'.\n" +
+                 "DiscardAndRetry (default): it fails on screen and on the scoreboard, but QUEST+ " +
+                 "never hears it and the same stimulus is presented again — an early press " +
+                 "answered no stutter, so it is not evidence about the threshold.\n" +
+                 "IgnoreAndContinue: the press is swallowed entirely and the trial carries on — " +
+                 "no penalty, useful while piloting.\n\n" +
+                 "Only affects blocks whose weapon column is 'shockwave'.")]
+        public EarlyFirePolicy earlyFirePolicy = EarlyFirePolicy.DiscardAndRetry;
+
         [Header("Latency (manual fallback, ms)")]
         public float latencyLeftMs  = 0f;
         public float latencyRightMs = 100f;
@@ -166,6 +178,29 @@ namespace JndUfo
         public bool  SpikeFiredThisFrame { get; private set; }
         /// <summary>Measured duration of the most recent stutter (ms).</summary>
         public float LastStutterMs         { get; private set; }
+
+        /// <summary>
+        /// Wall-clock instant (<see cref="Time.realtimeSinceStartup"/>) at which the most recent
+        /// stutter finished blocking the main thread.
+        ///
+        /// The shockwave response window opens here rather than when the stutter was requested:
+        /// the stutter runs at the END of the frame that schedules it, so a participant cannot
+        /// have reacted to it yet, and starting the clock early would charge them the whole
+        /// stutter as reaction time — worst exactly where the stimulus is largest.
+        ///
+        /// realtimeSinceStartup, not unscaledTime: the latter is stamped once at the top of a
+        /// frame, so reading it here would report the instant the stutter STARTED and quietly
+        /// subtract the whole stimulus from every reaction time. Same origin, so it is directly
+        /// comparable with the phase clock the logs use.
+        /// </summary>
+        public float LastSpikeEndRealtime { get; private set; } = float.NaN;
+
+        /// <summary>
+        /// Which cannon this block hands the participant, and therefore what triggers the stutter:
+        /// the UFO crossing the tower (laser) or a timer the participant cannot anticipate
+        /// (shockwave). Set from the block's CSV row by <see cref="BeginRound"/>.
+        /// </summary>
+        public WeaponKind Weapon { get; private set; } = WeaponKind.Laser;
 
         const int MaxLoggedStuttersPerShot = 256;
         readonly List<float> _stuttersSinceShot = new List<float>(32);
@@ -364,18 +399,54 @@ namespace JndUfo
             if (crossed) CrossingCount++;
 
             // ── Stutter: one-shot per crossing ─────────────────────────────
-            if (crossed && testMode == TestMode.FrameTimeStutter)
-            {
-                float ms = _practiceMode
-                    ? _practiceStutterMs
-                    : (useStaircase && _staircase != null ? _staircase.CurrentValue : spikeMagnitudeMs);
-                ScheduleSpike(ms);
-            }
+            // Shockwave blocks still track and count crossings — the UFO moves the same way and
+            // the side column stays meaningful — but they never fire from one. Their stutter is on
+            // a timer instead (see FireTimedSpike), so a participant who happens to sweep past the
+            // tower mid-trial gets no free stimulus out of it.
+            if (crossed && testMode == TestMode.FrameTimeStutter && Weapon == WeaponKind.Laser)
+                ScheduleSpike(PendingStimulusMs);
 
             ApplyFps();
             ApplyLatency();
             ApplyAcceleration();
         }
+
+        /// <summary>
+        /// The stutter size that would be delivered right now — the practice ladder's fixed value
+        /// during warm-up, otherwise whatever QUEST+ currently proposes, falling back to the
+        /// Inspector magnitude when the staircase is off.
+        /// </summary>
+        float PendingStimulusMs => _practiceMode
+            ? _practiceStutterMs
+            : (useStaircase && _staircase != null ? _staircase.CurrentValue : spikeMagnitudeMs);
+
+        /// <summary>
+        /// Delivers this trial's stutter on demand, for shockwave blocks where a timer rather
+        /// than a tower crossing decides when the stimulus arrives.
+        ///
+        /// Returns the size requested. It lands at the end of this frame like any other spike, so
+        /// callers that need to know when it actually finished must wait for
+        /// <see cref="SpikeCount"/> to advance and then read
+        /// <see cref="LastSpikeEndRealtime"/>.
+        /// </summary>
+        public float FireTimedSpike()
+        {
+            float ms = PendingStimulusMs;
+            ScheduleSpike(ms);
+            return ms;
+        }
+
+        /// <summary>
+        /// Drops a stutter that has been scheduled but not yet delivered.
+        ///
+        /// There is a one-frame window where an shockwave trial requests its stutter in Update and
+        /// the participant fires in the same frame, before LateUpdate has run it. That press is an
+        /// early fire — they cannot have reacted to a frame that has not been presented — so the
+        /// trial is over, and letting the stutter go off anyway would deliver a stimulus with no
+        /// trial attached to it: it would land in the NEXT trial's stutter burst and be logged
+        /// against a stimulus it was not presented for.
+        /// </summary>
+        public void CancelPendingSpike() => _spikePending = false;
 
         void LateUpdate()
         {
@@ -384,8 +455,9 @@ namespace JndUfo
 
             float measured = Stutter(_spikePendingMs);
 
-            SpikeFiredThisFrame = true;
-            LastStutterMs         = measured;
+            SpikeFiredThisFrame  = true;
+            LastStutterMs        = measured;
+            LastSpikeEndRealtime = Time.realtimeSinceStartup;
             SpikeCount++;
             TotalStutterMs += measured;
 
@@ -420,6 +492,7 @@ namespace JndUfo
 
             _config            = config;
             testMode           = config.testMode;
+            Weapon             = config.weapon;
             useStaircase       = config.useStaircase;
             useManualLevelList = config.useManualLevelList;
             closeRadius        = config.closeRadius;
@@ -444,6 +517,11 @@ namespace JndUfo
 
             _staircase = useStaircase ? BuildStaircase(config) : null;
             RefreshStaircaseEstimates();
+
+            // The trial clock and the staircase have to describe the same block, so the runner is
+            // handed the config here rather than reading it for itself.
+            if (ShockwaveTrialRunner.Instance != null)
+                ShockwaveTrialRunner.Instance.BeginRound(config);
 
             ApplyTaskParams();
             if (scoreManager != null) scoreManager.SetScoring(config.hitPoints, config.missPoints);
@@ -546,7 +624,13 @@ namespace JndUfo
             if (towerManager != null)
             {
                 towerManager.hitZoneRadius  = closeRadius;
-                towerManager.showHitZone    = showHitZone;
+                // Never on an shockwave block, whatever the config column says. The zone lines
+                // mark the width a shot has to land inside — a purely spatial cue — and the cannon
+                // levels the whole plane, so nothing about where the participant is affects the
+                // outcome. Drawing a hit radius for it would advertise an aiming task that is not
+                // being run, and invite them to spend the response window lining up instead of
+                // watching for the stutter.
+                towerManager.showHitZone    = showHitZone && Weapon != WeaponKind.Shockwave;
                 towerManager.hitZoneOpacity = 0.35f;
                 towerManager.RefreshHitZone();
             }
@@ -569,7 +653,19 @@ namespace JndUfo
         /// Called by GameManager after each shot. Correct = player hit (within closeRadius);
         /// the perturbation went undetected. Incorrect = miss; perturbation disrupted tracking.
         /// </summary>
-        public void ReportShotResult(bool isHit)
+        public void ReportShotResult(bool isHit) => ReportShotResult(isHit, feedStaircase: true);
+
+        /// <summary>
+        /// As above, but with the option to withhold the response from the posterior.
+        ///
+        /// <paramref name="feedStaircase"/> is false for an shockwave trial the participant ended
+        /// prematurely under <see cref="EarlyFirePolicy.DiscardAndRetry"/>: no stutter was ever
+        /// delivered, so the press answered nothing and is not evidence about the threshold. The
+        /// stimulus is left untouched, which re-presents the same one next trial — QUEST+ selects
+        /// the next stimulus as part of folding in a response, so not folding one in is exactly
+        /// what "try that trial again" means.
+        /// </summary>
+        public void ReportShotResult(bool isHit, bool feedStaircase)
         {
             // Captured before anything below can advance the staircase. RecordResponse
             // folds in the response AND immediately selects the next stimulus, so by the
@@ -577,6 +673,7 @@ namespace JndUfo
             // one — logging that would pair every response with the wrong stimulus.
             PresentedStimulusMs = CurrentStimulusValue;
 
+            if (!feedStaircase) return;
             // Practice shots are warm-up only — they must never inform the posterior.
             if (_practiceMode) return;
             if (_staircase == null || !useStaircase) return;
