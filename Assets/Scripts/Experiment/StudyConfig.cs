@@ -142,16 +142,26 @@ namespace JndUfo
         // changing it means recomputing guessRate, which is exactly why it does not belong in a
         // file someone might edit between runs.
         /// <summary>
-        /// Half-width of the hit window, world units. Sized from the measured cost of a 400 ms
-        /// stutter rather than picked: regressing |miss| on stutter size across sessions 2 and 5
-        /// gives 0.0138 and 0.0117 u/ms, both predicting ~5.95 u of extra miss at 400 ms. At
-        /// r = 6 a maximal stutter no longer pushes a well-aimed shot outside the window.
+        /// Half-width of the hit window, world units, calibrated on a 16:9 display.
+        ///
+        /// Sized against the measured cost of a stutter rather than picked: regressing |miss| on
+        /// stutter size across sessions 2 and 5 gives 0.0138 and 0.0117 u/ms. The QUEST+ stimulus
+        /// grid tops out at 250 ms, so a maximal *measured* stutter predicts only ~2.9-3.5 u of
+        /// extra miss and r = 5 still contains it — the window is not itself what limits hits over
+        /// the range being measured. Only the 450 ms practice stutter exceeds it, and practice
+        /// outcomes are discarded before they reach the posterior.
         ///
         /// Changing this REQUIRES changing guessRate in ExperimentConfig.csv — chance level is
         /// 2r / shot-reachable width. GuessRateCalculator prints the correct value at startup
-        /// and warns when the CSV disagrees.
+        /// and warns when the CSV disagrees. r = 5 gives γ = 0.222 on 16:9, which is what the
+        /// laser rows carry.
+        ///
+        /// γ is aspect-dependent and this radius is not: the camera's FOV is vertical, so the
+        /// shot-reachable width grows with the display's aspect ratio while r stays put. The
+        /// laser guessRate is calibrated for 16:9 — the same r = 5 gives γ = 0.167 on 21:9, so an
+        /// ultrawide session needs its own guessRate or QUEST+ is handed the wrong chance level.
         /// </summary>
-        public readonly float closeRadius      = 6f;
+        public readonly float closeRadius      = 5f;
         public readonly bool  showHitZone      = true;
         public readonly float crossingDeadZone = 0.25f;
         public readonly float fireCooldown     = 0.25f;
