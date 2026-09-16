@@ -1,4 +1,4 @@
 weapon,unityApplicationFps,practiceStuttersMs,swSpikeDelayMinSec,swSpikeDelayMaxSec,swWindowSec,swRespikeMinSec,swRespikeMaxSec,swMaxEarlyPerRound,maxSpikesPerRound,roundTimeoutSec,hitPoints,missPoints,stimMinMs,stimMaxMs,stimCount,threshMinMs,threshMaxMs,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD
-shockwave,60,450;300;200;100;50,1.5,3,0.5,1,2,1,10,0,100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.556,50,8,5
-laser,60,450;300;200;100;50,1.5,3,0.5,1,2,1,10,20,100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.222,50,8,5
-laser,500,,1.5,3,0.5,1,2,1,10,20,100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.222,50,8,5
+shockwave,60,450;300;200;100;50,1.5,3,0.35,1,2,1,10,0,100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.412,50,8,5
+laser,60,450;300;200;100;50,1.5,3,0.35,1,2,1,10,20,100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.222,50,8,5
+laser,500,,1.5,3,0.35,1,2,1,10,20,100,-10,5,250,40,5,250,60,1,8,11,0,0.06,4,0.222,50,8,5

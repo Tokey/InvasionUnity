@@ -15,36 +15,51 @@ namespace JndUfo
     /// arbitrary press times — a floor computed against an optimal guesser rather than a careless
     /// one.
     ///
-    /// The round has two phases, and a participant who perceives nothing can exploit both:
+    /// Every bet a blind participant makes is the same one. After each starting gun — the round's
+    /// own, or the TRY AGAIN! that follows a late press — the stutter lands at D ~ U(dMin, dMax)
+    /// and opens a window of W; a press at t after the gun resolves as
     ///
-    ///   First phase   The first stutter lands at D ~ U(dMin, dMax) after the starting gun and
-    ///                 opens a window of W. A press at t wins iff D ∈ [t - W, t]. A press before
-    ///                 D is "too early": forgiven up to swMaxEarlyPerRound times, each redrawing
-    ///                 D from the press. The redraw means probing teaches the guesser nothing —
-    ///                 but a forgiven press is still a FREE RE-ROLL of the same bet, which is why
-    ///                 the cap matters so much: every extra forgiven press lifts γ, and unlimited
-    ///                 forgiveness lifts it to 1. Past the cap an early press is a counted miss
-    ///                 that ends the round. A press after D + W is a counted miss and drops them
-    ///                 into the second phase.
+    ///   hit    D ∈ [t − W, t]   counted hit, round over.
+    ///   early  D > t            forgiven while the round's swMaxEarlyPerRound allowance lasts:
+    ///                           not counted, and D is redrawn from the press, so the same bet is
+    ///                           simply re-armed — a FREE RE-ROLL. One press past the allowance
+    ///                           is a counted miss that ends the round.
+    ///   late   D < t − W        the stutter ran and its window closed. If that stutter was the
+    ///                           round's last (maxSpikesPerRound) the window closing already ended
+    ///                           the round as a timeout, a counted miss. Otherwise the press is a
+    ///                           counted late miss, TRY AGAIN! goes up, and the next stutter is
+    ///                           timed with the first-delay draw again from the gate: the same bet
+    ///                           once more, with the early allowance NOT replenished.
     ///
-    ///   Re-spike phase  After a miss the next stutter is re-presented G ~ U(gMin, gMax) after
-    ///                 the press, and the callout has just TOLD them so. A press at gMax after
-    ///                 every "TOO LATE" wins iff G ∈ [gMax - W, gMax], i.e. with probability
-    ///                 p = min(W, gSpread) / gSpread, and every failure re-arms the same bet
-    ///                 until the round's stutter cap is spent.
+    /// The re-spike gap (swRespikeMin/MaxSec) never enters: it times the next stutter only after
+    /// a window nobody answered, and a participant who perceives nothing does not know a window
+    /// has opened, let alone closed — they press at their t and take whichever branch that lands
+    /// in. (Choosing not to press only spends the round's stutters.)
     ///
     /// QUEST+ sees the stream of counted responses, so what it measures at stimulus zero is
-    /// E[hits per round] / E[counted responses per round] under the best t. That ratio is what
-    /// this returns. It is a design signal as much as a config value: it is dominated by W
-    /// against the two spreads and by the early-press allowance, so widening the re-spike gap or
-    /// the first delay, or forgiving fewer early presses, is what lowers it. A γ above ~0.4
-    /// means QUEST+ needs many more trials to separate detection from luck.
+    /// E[hits per round] / E[counted responses per round] under the best t. Going late never
+    /// helps that ratio — a late press adds a counted miss and then the same bet again — so the
+    /// best t is dMin + W: the latest press that can never be late. There the round always ends
+    /// in exactly one counted response (a hit, or the forfeit after the free re-rolls are spent),
+    /// which gives the closed form
+    ///
+    ///     γ = 1 − (1 − W / spread) ^ (swMaxEarlyPerRound + 1)
+    ///
+    /// with spread = dMax − dMin. The scan below reproduces it and also handles the settings the
+    /// closed form does not (no forgiven press, where late re-bets are the only second chance).
+    /// Two levers, then: W against the spread, and the number of forgiven presses — each
+    /// forgiven press squares the odds of failing to get lucky. A γ above ~0.4 means QUEST+
+    /// needs many more trials to separate detection from luck.
     /// </summary>
     public static class ShockwaveGuessRate
     {
-        // One-off startup work over a few seconds of wall clock, sized for a resolution far finer
-        // than any participant's timing precision rather than for speed.
-        const int PressSteps = 4000;
+        // One-off startup work, sized for a resolution far finer than any participant's timing
+        // precision rather than for speed.
+        const int PressSteps = 2000;
+
+        // "Unlimited" in the config is modelled as this many: past it γ is already at its limit
+        // to every printed decimal, and the table sizes below stay bounded.
+        const int ModelledUnlimited = 50;
 
         public static bool TryCompute(StudyConfig cfg,
                                        out float guessRate, out float bestPressSec, out string report)
@@ -55,16 +70,14 @@ namespace JndUfo
             if (cfg == null) return false;
 
             float dMin = cfg.swSpikeDelayMinSec, dMax = cfg.swSpikeDelayMaxSec;
-            float gMin = cfg.swRespikeMinSec,    gMax = cfg.swRespikeMaxSec;
             float w    = cfg.swWindowSec;
-            int   cap  = cfg.maxSpikesPerRound;
-            // 0 in the config means unlimited; modelled as a large number, which drives the
-            // first-phase re-roll sum to its limit and γ to 1 — the honest answer for that setting.
-            int   free = cfg.swMaxEarlyPerRound > 0 ? cfg.swMaxEarlyPerRound : 1000;
+            int   free = cfg.swMaxEarlyPerRound > 0 ? Mathf.Min(cfg.swMaxEarlyPerRound, ModelledUnlimited)
+                                                     : ModelledUnlimited;
+            int   cap  = cfg.maxSpikesPerRound > 0 ? Mathf.Min(cfg.maxSpikesPerRound, ModelledUnlimited)
+                                                    : ModelledUnlimited;
 
             float dSpan = dMax - dMin;
-            float gSpan = gMax - gMin;
-            if (dSpan < 0f || gSpan < 0f || w <= 0f) return false;
+            if (dSpan < 0f || w <= 0f) return false;
 
             // A fixed first delay leaves nothing to guess about: the participant learns the one
             // moment the stutter always arrives and answers it every time, so chance level is 1.
@@ -78,23 +91,12 @@ namespace JndUfo
                 return true;
             }
 
-            // ── Re-spike phase, closed form ──────────────────────────────────
-            // p per press; up to M further stutters after the first; a round that spends them all
-            // ends in one more counted response (the timeout) with no hit.
-            float pR = gSpan <= 1e-4f ? 1f : Mathf.Clamp01(Mathf.Min(w, gSpan) / gSpan);
-            int   m  = cap > 0 ? Mathf.Max(0, cap - 1) : 1000;   // uncapped: effectively unbounded
+            // Expected (hits, counted responses) for the rest of a round, by state: e forgiven
+            // early presses already spent, s stutters already delivered. Filled from the terminal
+            // states back, so each cell only reads cells already computed.
+            var hits = new float[free + 1, cap];
+            var resp = new float[free + 1, cap];
 
-            float rHits = 0f, rResp = 0f, survive = 1f;
-            for (int k = 0; k < m; k++)
-            {
-                rResp   += survive;          // a press is made on this re-spike
-                rHits   += survive * pR;
-                survive *= 1f - pR;
-                if (survive < 1e-7f) break;
-            }
-            rResp += survive;                // the timeout, if every re-spike was missed
-
-            // ── First phase, scanned over the press time ─────────────────────
             // A press can only ever be worth making between the earliest possible stutter and
             // the last instant its window is still open.
             float tLo = dMin;
@@ -108,37 +110,36 @@ namespace JndUfo
                 float pLate  = Mathf.Clamp01((t - w - dMin) / dSpan);
                 float pEarly = Mathf.Clamp01(1f - pHit - pLate);
 
-                // Attempt j (0-based) is reached with probability pEarly^j: every earlier attempt
-                // was forgiven and re-armed the same bet. One past the last forgiven attempt the
-                // early press is a counted miss with no hit in it.
-                float reroll = 0f, reach = 1f;
-                for (int j = 0; j <= free; j++)
+                for (int e = free; e >= 0; e--)
+                for (int s = cap - 1; s >= 0; s--)
                 {
-                    reroll += reach;
-                    reach  *= pEarly;
-                    if (reach < 1e-7f) { reach = 0f; break; }
+                    float h = pHit, r = pHit;
+
+                    if (s + 1 >= cap) r += pLate;                       // timeout at window close
+                    else { h += pLate * hits[e, s + 1]; r += pLate * (1f + resp[e, s + 1]); }
+
+                    if (e + 1 > free) r += pEarly;                      // forfeit
+                    else { h += pEarly * hits[e + 1, s]; r += pEarly * resp[e + 1, s]; }
+
+                    hits[e, s] = h;
+                    resp[e, s] = r;
                 }
 
-                float hits = (pHit + pLate * rHits) * reroll;
-                float resp = (pHit + pLate * (1f + rResp)) * reroll + reach;
-                float g    = resp > 1e-9f ? hits / resp : 0f;
-
+                float g = resp[0, 0] > 1e-9f ? hits[0, 0] / resp[0, 0] : 0f;
                 if (g > guessRate) { guessRate = g; bestPressSec = t; }
             }
 
             guessRate = Mathf.Clamp01(guessRate);
 
+            string forgiven = cfg.swMaxEarlyPerRound > 0 ? cfg.swMaxEarlyPerRound.ToString() : "UNLIMITED";
             var sb = new StringBuilder();
             sb.AppendLine("[ShockwaveGuessRate] Chance-level success rate from the round timing:");
             sb.AppendLine($"    First stutter D  : {dMin:0.###} .. {dMax:0.###} s   (spread {dSpan:0.###} s)");
-            sb.AppendLine($"    Response window W: {w:0.###} s");
-            sb.AppendLine($"    Re-spike gap G   : {gMin:0.###} .. {gMax:0.###} s   (spread {gSpan:0.###} s, " +
-                          $"blind hit chance per re-spike {pR:0.###})");
-            sb.AppendLine($"    Stutters per round: {(cap > 0 ? cap.ToString() : "uncapped")}   " +
-                          $"early presses forgiven: {(cfg.swMaxEarlyPerRound > 0 ? cfg.swMaxEarlyPerRound.ToString() : "UNLIMITED")}");
-            sb.AppendLine($"    Best blind press : t = {bestPressSec:0.###} s after the starting gun " +
-                          "(again after each TOO EARLY, while forgiven), " +
-                          $"then {gMax:0.###} s after every TOO LATE");
+            sb.AppendLine($"    Response window W: {w:0.###} s   (W / spread = {w / dSpan:0.###})");
+            sb.AppendLine($"    Stutters per round: {(cfg.maxSpikesPerRound > 0 ? cfg.maxSpikesPerRound.ToString() : "uncapped")}   " +
+                          $"early presses forgiven: {forgiven}");
+            sb.AppendLine($"    Best blind press : t = {bestPressSec:0.###} s after every starting gun " +
+                          "(the round's, each forgiven TOO EARLY's redraw, and each TRY AGAIN!)");
             sb.AppendLine($"    >>> guessRate    : {guessRate:0.0000}   <-- put this in ExperimentConfig.csv");
 
             if (guessRate >= 0.999f)
@@ -149,11 +150,16 @@ namespace JndUfo
             }
             else if (guessRate > 0.35f)
             {
-                sb.AppendLine("    (chance is high — QUEST+ needs more trials to separate signal from it. It is " +
-                              "driven by the window against the two spreads and by forgiven early presses: " +
-                              $"widening swRespikeMaxSec to {gMin + w * 4f:0.#} s puts the re-spike bet near " +
-                              $"0.25, widening swSpikeDelayMaxSec to {dMin + w * 4f:0.#} s does the same for " +
-                              "the first press, and swMaxEarlyPerRound=0 removes the free re-roll.)");
+                float target   = 0.3f;
+                // From γ = 1 − (1 − W/spread)^(free+1): the W/spread that would give the target.
+                float ratioFor = 1f - Mathf.Pow(1f - target, 1f / (free + 1));
+                sb.AppendLine("    (chance is high — QUEST+ needs more trials to separate signal from it. " +
+                              "γ = 1 − (1 − W/spread)^(forgiven+1), so for γ ≈ 0.3 with " +
+                              $"{forgiven} forgiven press(es) W/spread must be ≈ {ratioFor:0.###}: " +
+                              $"a {w:0.##} s window needs a spread of {w / ratioFor:0.##} s, " +
+                              $"or the {dSpan:0.##} s spread needs a window of {dSpan * ratioFor:0.###} s. " +
+                              "Fewer forgiven presses also lowers it — but swMaxEarlyPerRound=0 means " +
+                              "UNLIMITED, not none.)");
             }
 
             report = sb.ToString();

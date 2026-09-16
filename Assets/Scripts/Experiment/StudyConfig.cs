@@ -438,13 +438,19 @@ namespace JndUfo
             // A few points of slack — demanding an exact match would fire on rounding.
             if (blind <= declared + 0.03f) return;
 
+            // The window/spread ratio that would bring the blind rate down to the declared γ,
+            // from γ = 1 − (1 − W/spread)^(forgiven+1) — see ShockwaveGuessRate.
+            int   forgiven = Mathf.Max(1, swMaxEarlyPerRound);
+            float ratioFor = 1f - Mathf.Pow(1f - Mathf.Clamp01(declared), 1f / (forgiven + 1));
             Debug.LogError(
                 $"[StudyConfig] Shockwave chance level is understated: the best blind press wins " +
                 $"{blind:P0} of rounds with no perception at all, but guessRate says {declared:P0}. " +
                 $"QUEST+ will credit the difference to detection and estimate a threshold that is " +
-                $"too low. Either set guessRate to {blind:0.###}, or restore the balance — the blind " +
-                $"rate is about window / first-delay spread, so a {swWindowSec:0.##}s window needs a " +
-                $"{swWindowSec / Mathf.Max(0.01f, declared):0.##}s spread. Edit Data/ExperimentConfig.csv.");
+                $"too low. Either set guessRate to {blind:0.###}, or restore the balance — with " +
+                $"{forgiven} forgiven early press(es) the blind rate is 1 − (1 − window/spread)^" +
+                $"{forgiven + 1}, so a {swWindowSec:0.##}s window needs a " +
+                $"{swWindowSec / Mathf.Max(0.01f, ratioFor):0.##}s first-delay spread for {declared:P0}. " +
+                "Edit Data/ExperimentConfig.csv.");
         }
 
         /// <summary>
