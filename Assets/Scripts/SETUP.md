@@ -295,6 +295,16 @@ Derivable columns are deliberately absent: `hitX` is `towerX + missDistX`, `absM
 magnitude, `shotsMissed` is `shotsFired − shotsHit`, and the Euclidean miss equals the X miss
 because everything sits on the same fixedZ plane.
 
+### Checking a session's logs
+`python Analysis/audit_logs.py` audits the newest session (or `audit_logs.py 52`, or `--all`):
+every row parses to the header's column count, the ShotLog's internal invariants hold (early
+presses have no stutter behind them and no reaction time, detections react inside their
+window, timeouts have no landing point, practice is never counted, rounds and attempts number
+correctly), and the two files agree — stutters and shots counted in ShotLog match the
+`spikeFired` / `shotFired` frames in PlayerLog, and each shot's frame carries the shot's
+`roundNumber`. Exit code 1 on any failure. The CSVs are the data; `Analysis/build_db.py`
+builds a SQLite view of them for convenience and can be rebuilt at any time.
+
 ### Notes
 - Nothing is written to disk **while a phase is running**. Frame and trial rows are buffered in
   memory and flushed at the phase boundary. A file write on the main thread is itself a
