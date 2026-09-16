@@ -36,9 +36,11 @@ namespace JndUfo
         /// </summary>
         const float HintCentreOffsetY = 160f;
 
-        /// <summary>Shortest an alert may be on screen before the trial ending can clear it. On
-        /// shockwave the participant fires about a second after the stutter, so without a floor
-        /// here the line they are meant to read would be taken away as they read it.</summary>
+        /// <summary>Shortest an alert may be on screen before anything is allowed to clear it — the
+        /// trial ending, or the shockwave window closing. A participant who answers on the stutter
+        /// frame takes firing away on the very next frame, and a window shorter than this would
+        /// cut the line before it could be read; either way the line they are meant to read would
+        /// be taken away as they read it.</summary>
         const float HintPunchMinSec = 0.45f;
 
         GameObject      _root;
@@ -71,25 +73,50 @@ namespace JndUfo
         Vector2         _hintRestPos;
         HintMode        _hintMode;
         string          _idleText  = "";
-        float           _alertStart;      // unscaled time the alert began
+        // realtimeSinceStartup, not unscaledTime. The alert is raised in the LateUpdate that
+        // follows the stutter, and unscaledTime is stamped once at the top of the frame — before
+        // the block. Measured from there, a 450 ms practice stutter would start the punch 450 ms
+        // in, with the slam already ~93% decayed on its first rendered frame.
+        float           _alertStart;
         float           _alertHold;
+        bool            _alertReleased;   // the window closed: hand back to Idle once readable
 
         readonly Color _hintIdleColor  = new Color(1f, 0.74f, 0.24f, 0.85f);
         readonly Color _hintAlertColor = new Color(1f, 0.30f, 0.22f, 1f);
 
         [Header("Between-Trial Gate")]
+        [Tooltip("Shown for the frame or two the round's log rows take to reach disk, before " +
+                 "READY. Names the pause so a hitch there reads as bookkeeping, not as a stutter.")]
+        public string gateSavingText = "SAVING…";
         [Tooltip("Shown while the scene resets, pulsing. Reads as the run-up to the starting gun " +
                  "rather than as a stoppage — the participant is being counted in, not told off.")]
         public string gateHoldText = "READY…";
         [Tooltip("The starting gun itself. Shaken, then the gate lifts and firing comes back.")]
         public string gateGoText   = "GO!";
+        [Tooltip("The shockwave task's starting gun after TOO LATE!. Shaken like GO!, with no veil " +
+                 "and no READY… before it: the round is still open and nothing in the scene has " +
+                 "changed, so the one word is the whole re-gate — it replaces the callout in the " +
+                 "same spot, and firing comes back the frame it leaves.")]
+        public string gateRetryText = "TRY AGAIN!";
         [Tooltip("How much of the play area the reset veil covers. Opaque would hide the pan and " +
                  "the skybox spin, which are what sell the scene changing location.")]
         [Range(0f, 1f)] public float waitVeilAlpha = 0.62f;
+        [Tooltip("Seconds the veil takes to fade in when the gate goes up, and to lift again " +
+                 "under GO!. A hard cut either way read as a flicker between the reveal and the " +
+                 "reset; a short fade makes the veil part of one continuous transition. The " +
+                 "READY… text fades with it; GO! does not — the starting gun has to land.")]
+        [Min(0f)] public float veilFadeSec = 0.2f;
 
         GameObject      _gateRoot;
+        Image           _veil;
         TextMeshProUGUI _gate;
         bool            _pulseHold;
+        // The veil's fade, 0..1 of waitVeilAlpha. Ramped in Update toward _veilTarget so the gate
+        // never cuts: 1 while the scene resets, 0 once GO! has lifted it.
+        float           _veilRamp;
+        float           _veilTarget;
+        bool            _textFollowsVeil;   // READY…/SAVING… fade with the veil; GO! stands alone
+        Color           _gateTextColor;     // the word at full strength; ApplyGateText derives the frame's alpha
         readonly Color  _gateHoldColor = new Color(1f, 0.74f, 0.24f, 1f);
         readonly Color  _gateGoColor   = new Color(0.45f, 1f, 0.6f, 1f);
 
@@ -173,14 +200,27 @@ namespace JndUfo
             if (_hint == null) Build();
             if (_hint == null) return;
 
-            _hint.text  = text;
+            _hint.text     = text;
             _hintPlate.gameObject.SetActive(true);
-            _hintMode   = HintMode.Alert;
-            _alertStart = Time.unscaledTime;
-            // How long the PUNCH runs, not how long the line stays up — the line now holds for the
-            // rest of the trial. This is only the floor on how long an alert must be readable
-            // before the trial ending is allowed to take it away.
-            _alertHold    = Mathf.Max(HintPunchMinSec, holdSec);
+            _hintMode      = HintMode.Alert;
+            _alertStart    = Time.realtimeSinceStartup;
+            _alertReleased = false;
+            // How long the PUNCH runs, not how long the line stays up — the line holds until it
+            // is released or the trial ends. This is only the floor on how long an alert must be
+            // readable before either is allowed to take it away.
+            _alertHold     = Mathf.Max(HintPunchMinSec, holdSec);
+        }
+
+        /// <summary>
+        /// The alert's reason has passed — the shockwave window closed with the round still live —
+        /// so hand back to the standing prompt, once the punch has been on screen long enough to
+        /// read. "FIRE NOW" over a closed window is an instruction to fail; the prompt that comes
+        /// back says what to do instead, which is watch for it again. The next stutter flashes the
+        /// alert afresh. Harmless to call every frame, and a no-op outside the alert state.
+        /// </summary>
+        public void ReleaseAlertHint()
+        {
+            if (_hintMode == HintMode.Alert) _alertReleased = true;
         }
 
         /// <summary>Clears the standing prompt but lets an alert already in flight finish — the
@@ -223,22 +263,86 @@ namespace JndUfo
         /// Deliberately NOT opaque: the pan and the skybox spin still have to read as the scene
         /// changing location, or the participant stops believing the tower moved at all.
         /// </summary>
-        public void ShowGateHold()
+        public void ShowGateHold() => ShowGateWord(gateHoldText, _gateHoldColor, pulse: true);
+
+        /// <summary>
+        /// The same veil with "SAVING…" on it, steady rather than pulsing — it is up for a frame
+        /// or two while the logs flush, and a pulse that short would read as a flicker. The
+        /// dimmer colour keeps it from looking like the starting gun.
+        /// </summary>
+        public void ShowGateSaving() =>
+            ShowGateWord(gateSavingText,
+                         new Color(_gateHoldColor.r, _gateHoldColor.g, _gateHoldColor.b, 0.6f),
+                         pulse: false);
+
+        /// <summary>
+        /// The veil with no word on it. For a reset that plays after the phase has already ended
+        /// (the last practice round, the trial that finished the staircase): the scene still has
+        /// to reset under cover, because the next prompt lands on whatever it leaves — but READY…
+        /// would promise a GO! that is not coming.
+        /// </summary>
+        public void ShowGateVeil() => ShowGateWord("", _gateHoldColor, pulse: false);
+
+        // Puts the gate up with a word on it and starts the veil fading in — from nothing if it
+        // was down, from wherever it is if a SAVING… → READY… swap lands mid-fade, so the swap
+        // never restarts it. The word's alpha is applied through the ramp on this same call: the
+        // overlay's Update has already run this frame, so a colour set here at full strength
+        // would render one frame at full strength before the ramp caught it — a visible flash of
+        // text ahead of the veil it is meant to arrive with.
+        void ShowGateWord(string text, Color color, bool pulse)
         {
             if (_gateRoot == null) Build();
             if (_gateRoot == null) return;
 
-            _gate.text  = gateHoldText;
-            _gate.color = _gateHoldColor;
-            _gateRoot.SetActive(true);
-            _pulseHold  = true;
+            if (!_gateRoot.activeSelf)
+            {
+                _veilRamp = 0f;
+                _gateRoot.SetActive(true);
+            }
+            _veilTarget      = 1f;
+            _textFollowsVeil = true;
+            _pulseHold       = pulse;
+            _gateTextColor   = color;
+            _gate.text       = text;
             _gate.rectTransform.localScale = Vector3.one;
+            ApplyVeil();
+            ApplyGateText();
+        }
+
+        // The word's colour for this frame: its base colour, through the READY… pulse if that is
+        // running, through the veil's ramp if it is following the veil.
+        void ApplyGateText()
+        {
+            if (_gate == null) return;
+            float a = _gateTextColor.a;
+            if (_pulseHold)
+            {
+                // A slow pulse rather than a hard blink: it has to be unmistakably "not yet"
+                // without becoming a flicker the eye tries to time.
+                a *= 0.45f + 0.55f * (0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 6.5f));
+            }
+            if (_textFollowsVeil) a *= _veilRamp;
+            _gate.color = new Color(_gateTextColor.r, _gateTextColor.g, _gateTextColor.b, a);
         }
 
         public void HideGate()
         {
             if (_gateRoot != null) _gateRoot.SetActive(false);
             _pulseHold = false;
+            _veilRamp  = 0f;
+            // A beat cut short from outside (AbandonRegate) leaves the word mid-shake; put it
+            // straight so the next thing on the gate does not start displaced.
+            if (_gate != null)
+            {
+                _gate.rectTransform.anchoredPosition = Vector2.zero;
+                _gate.rectTransform.localScale       = Vector3.one;
+            }
+        }
+
+        void ApplyVeil()
+        {
+            if (_veil != null)
+                _veil.color = new Color(0.02f, 0.02f, 0.05f, waitVeilAlpha * _veilRamp);
         }
 
         /// <summary>
@@ -249,15 +353,32 @@ namespace JndUfo
         /// The shockwave clock arms off the firing-enabled edge, so this also gives that task a
         /// defined starting gun rather than letting a trial begin mid-pan.
         /// </summary>
-        public IEnumerator GoBeat(float seconds)
+        public IEnumerator GoBeat(float seconds) => WordBeat(gateGoText, _gateGoColor, seconds);
+
+        /// <summary>
+        /// The TOO LATE re-gate's starting gun: "TRY AGAIN!", shaken exactly like GO!, then gone —
+        /// and the caller hands firing back when this returns, the same contract as
+        /// <see cref="GoBeat"/>. No veil goes up: the gate was down, so the ramp is at zero and
+        /// the veil image stays fully transparent under the word.
+        /// </summary>
+        public IEnumerator RetryBeat(float seconds) => WordBeat(gateRetryText, _gateHoldColor, seconds);
+
+        IEnumerator WordBeat(string text, Color color, float seconds)
         {
             if (_gateRoot == null) Build();
             if (_gateRoot == null) yield break;
 
-            _pulseHold  = false;
-            _gate.text  = gateGoText;
-            _gate.color = _gateGoColor;
+            _pulseHold     = false;
+            _gate.text     = text;
+            _gateTextColor = color;
             _gateRoot.SetActive(true);
+
+            // The veil lifts under the word rather than with it: the scene clears while GO! is
+            // still shaking, and the word leaving is then the only event left to mark the gun.
+            // The text is released from the veil's ramp so the gun lands at full strength.
+            _textFollowsVeil = false;
+            _veilTarget      = 0f;
+            ApplyGateText();
 
             // Unscaled throughout: a stutter is a main-thread block, and timing the starting gun
             // off a scaled clock would make the countdown itself carry the stimulus.
@@ -288,12 +409,17 @@ namespace JndUfo
         // Only does work while something is actually on screen.
         void Update()
         {
-            if (_pulseHold && _gate != null)
+            if (_gateRoot != null && _gateRoot.activeSelf)
             {
-                // A slow pulse rather than a hard blink: it has to be unmistakably "not yet"
-                // without becoming a flicker the eye tries to time.
-                float a = 0.45f + 0.55f * (0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 6.5f));
-                _gate.color = new Color(_gateHoldColor.r, _gateHoldColor.g, _gateHoldColor.b, a);
+                if (_veilRamp != _veilTarget)
+                {
+                    float step = veilFadeSec > 0f ? Time.unscaledDeltaTime / veilFadeSec : 1f;
+                    _veilRamp  = Mathf.MoveTowards(_veilRamp, _veilTarget, step);
+                    ApplyVeil();
+                }
+
+                // GO!/TRY AGAIN! stand at full strength and need no per-frame colour work.
+                if (_pulseHold || _textFollowsVeil) ApplyGateText();
             }
 
             if (_hint == null || _hintMode == HintMode.Off) return;
@@ -319,18 +445,23 @@ namespace JndUfo
 
         void AnimateAlertHint()
         {
-            float t = Time.unscaledTime - _alertStart;
+            float t = Time.realtimeSinceStartup - _alertStart;
 
-            // The alert OWNS the rest of the trial. It never hands back to the standing prompt —
-            // the punch used to expire after ~1.1s and revert to "SPOT THE STUTTER" while the
-            // participant was still deciding, which is worse than useless: their measured reaction
-            // time averages 1.13s, so the instruction was being replaced by the wrong instruction
-            // at almost exactly the moment they acted on it. The prompt comes back only when a new
-            // trial arms it.
+            // The alert never times out on its own. The punch used to expire after ~1.1s and
+            // revert to "SPOT THE STUTTER" while the participant was still deciding, which is
+            // worse than useless: the instruction was being replaced by the wrong instruction at
+            // almost exactly the moment they acted on it. Only two things end it, and neither is
+            // a timer:
             //
-            // The one thing that clears it is the trial ending — HideIdleHint empties _idleText —
-            // and even then not until the punch has run, or a participant who answers on the
-            // stutter frame would never get to read what they answered.
+            //   the window closing   ReleaseAlertHint — shockwave only. The line is the cue for
+            //                        the window, so it leaves with the window and the standing
+            //                        prompt comes back until the next presentation.
+            //   the trial ending     HideIdleHint empties _idleText, and the line clears.
+            //
+            // Both wait for the punch to have been readable first, or a participant who answers
+            // on the stutter frame — or a window shorter than the punch — would never get to read
+            // what they were answering.
+            if (_alertReleased && t >= HintPunchMinSec) { SettleAlertToIdle(); return; }
             if (t >= _alertHold && string.IsNullOrEmpty(_idleText)) { HideHint(); return; }
 
             // Everything rides one fast exponential, so the punch, the shake and the strobe spend
@@ -351,10 +482,25 @@ namespace JndUfo
             float strobe = (0.5f + 0.5f * Mathf.Sin(t * 40f)) * decay;
             Color hot    = Color.Lerp(_hintAlertColor, Color.white, strobe);
 
-            // A shallow breath once the punch is spent, so a line that now stays up for the rest of
-            // the trial reads as live rather than as something stuck on screen.
+            // A shallow breath once the punch is spent, so a line that stays up reads as live
+            // rather than as something stuck on screen.
             float alive = 0.82f + 0.18f * (0.5f + 0.5f * Mathf.Sin(t * 7f));
             _hint.color = new Color(hot.r, hot.g, hot.b, Mathf.Lerp(alive, 1f, decay));
+        }
+
+        // Hands a released alert back to the standing prompt — or off, if there is none to go back
+        // to. The rest is reset here rather than left to AnimateIdleHint's next pass, so the plate
+        // does not spend one frame at the alert's last scale and offset under the idle text.
+        void SettleAlertToIdle()
+        {
+            _alertReleased = false;
+
+            if (string.IsNullOrEmpty(_idleText)) { HideHint(); return; }
+
+            _hint.text                  = _idleText;
+            _hintPlate.anchoredPosition = _hintRestPos;
+            _hintPlate.localScale       = Vector3.one;
+            _hintMode                   = HintMode.Idle;
         }
 
         void Build()
@@ -435,9 +581,9 @@ namespace JndUfo
             // ── Between-trial gate (veil + "READY…" / "GO!") ─────────────────
             _gateRoot = NewRect("Gate", canvasGo.transform,
                                  Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
-            var veil = _gateRoot.AddComponent<Image>();
-            veil.color         = new Color(0.02f, 0.02f, 0.05f, waitVeilAlpha);
-            veil.raycastTarget = false;
+            _veil = _gateRoot.AddComponent<Image>();
+            _veil.color         = new Color(0.02f, 0.02f, 0.05f, 0f);   // faded in by RaiseVeil
+            _veil.raycastTarget = false;
 
             _gate = MakeText(_gateRoot.transform, "GateText", "", 150f, FontStyles.Bold,
                              new Vector2(0f, 0.5f), new Vector2(1f, 0.5f),

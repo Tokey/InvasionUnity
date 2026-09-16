@@ -10,11 +10,16 @@ public class UIManager : MonoBehaviour
     public ScoreManager scoreManager;
     public GameManager  gameManager;
     public TMP_Text     scoreText;
-    public TMP_Text     roundText;
+
+    [Tooltip("The fill of the HUD's progress bar — the top-right slot the round counter used to " +
+             "occupy. Anchored to the left edge of its track; its right anchor is driven from " +
+             "0 to 1 as the phase progresses. Practice fills by rounds completed; the main run " +
+             "fills by how close QUEST+ is to stopping — see RoundProgress for the formula.")]
+    public RectTransform progressFill;
 
     [Tooltip("ONE font for the whole game. Assign a TMP Font Asset here and everything follows it " +
-             "— the score and round readouts below, the hit/miss callout, the weapon chip, the " +
-             "practice banner and hints, and the between-round prompts.\n\n" +
+             "— the score readout below, the hit/miss callout, the weapon chip, the practice " +
+             "banner and hints, and the between-round prompts.\n\n" +
              "Leave it empty to keep whatever font scoreText is already set to, which is what " +
              "happens today.")]
     public TMP_FontAsset hudFont;
@@ -43,17 +48,29 @@ public class UIManager : MonoBehaviour
     [Tooltip("Scale peak for a positive beat (hit). Miss uses 1/peak as the trough.")]
     public float scoreBeatPeak = 1.45f;
 
+    [Header("Progress Bar")]
+    [Tooltip("How lazily the fill follows its target, as a SmoothDamp smooth-time in seconds: " +
+             "it covers most of the distance in about this long and settles in two to three " +
+             "times it. A spring rather than a fixed-length tween so that a second response " +
+             "landing while the bar is still moving just bends its path — a tween restarted " +
+             "from rest would visibly stall and set off again.")]
+    [Min(0f)] public float progressSmoothSec = 0.5f;
+
     [Header("Shockwave Vignette  (Violet)")]
     public Color shockwaveFlashColor = new(0.75f, 0.45f, 1f, 1f);
     [Range(0f, 1f)] public float shockwaveAlpha = 0.85f;
 
-    [Header("Shockwave Callout")]
+    [Header("Timed Outcome Callout")]
     [Tooltip("Fired inside the response window — the stutter was noticed in time.")]
     public string calloutShockwaveHitText = "DESTROYED!";
-    [Tooltip("Fired before the stutter ever ran, so there was nothing to answer yet.")]
+    [Tooltip("Fired before the round's first stutter, so there was nothing to answer yet. The " +
+             "round carries on.")]
     public string calloutShockwaveEarlyText = "TOO EARLY!";
-    [Tooltip("The window closed unanswered.")]
+    [Tooltip("Fired after the window had closed. The round carries on and the stutter comes again.")]
     public string calloutShockwaveLateText = "TOO LATE!";
+    [Tooltip("The round ran out with no shot — shockwave's last window closed unanswered, or a " +
+             "laser round crossed the tower too many times or ran out its clock.")]
+    public string calloutOutOfTimeText = "OUT OF TIME!";
     [Tooltip("Early and late are both failures, but they are failures of opposite kinds. Amber " +
              "rather than the miss red keeps them legible as 'wrong timing' rather than 'bad aim'.")]
     public Color calloutShockwaveFailColor = new(1f, 0.68f, 0.2f, 1f);
@@ -81,6 +98,14 @@ public class UIManager : MonoBehaviour
     Color                _scoreBaseColor;
     Vector3              _scoreBaseScale;
 
+    // What the bar is showing, where it is heading, and how fast — the spring's state, stepped
+    // in Update only while the two differ. The target is the most the phase has reached: the bar
+    // never goes backward — see RoundProgress — so a phase is over when it reaches 1.
+    float _progressShown;
+    float _progressPeak;
+    float _progressVelocity;
+    bool  _progressSettled = true;
+
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     void Awake()
@@ -88,13 +113,12 @@ public class UIManager : MonoBehaviour
         ResolveReferences();
 
         // The hand-placed HUD is restyled here rather than by hand in the Inspector, so hudFont is
-        // genuinely one switch for the whole screen. Without this the score and round readouts
-        // would be the two texts that ignored it — and they sit directly beside the weapon chip,
-        // which is exactly where a font mismatch is most obvious.
+        // genuinely one switch for the whole screen. Without this the score readout would be the
+        // one text that ignored it — and it sits directly beside the weapon chip, which is
+        // exactly where a font mismatch is most obvious.
         if (hudFont != null)
         {
             HudFont.Apply(scoreText);
-            HudFont.Apply(roundText);
             HudFont.Apply(debugText);
         }
 
@@ -112,9 +136,14 @@ public class UIManager : MonoBehaviour
         if (_vignette == null) BuildOverlays();
         if (scoreManager != null) scoreManager.OnScored += HandleScored;
         RefreshScoreText();
+        RefreshProgress();
     }
 
-    void Start() => RefreshScoreText();
+    void Start()
+    {
+        RefreshScoreText();
+        RefreshProgress();
+    }
 
     void OnDisable()
     {
@@ -144,14 +173,15 @@ public class UIManager : MonoBehaviour
     }
 
     /// <summary>
-    /// The shockwave trial's result. Three outcomes rather than two: the participant can fail by
-    /// answering too early as well as too late, and those are opposite mistakes that need opposite
-    /// corrections, so collapsing them into one "Miss!" would withhold the only feedback that
-    /// tells them which way to move.
+    /// The result of a response decided by timing rather than aim — every shockwave response,
+    /// and a laser round that ran out with no shot. Several failure texts rather than one: the
+    /// participant can fail by answering too early, too late, or not at all, and those are
+    /// different mistakes that need different corrections, so collapsing them into one "Miss!"
+    /// would withhold the only feedback that tells them which way to move.
     /// </summary>
-    public void DisplayShockwaveResult(ShockwaveOutcome outcome, float totalScore)
+    public void DisplayOutcomeCallout(ShockwaveOutcome outcome, float totalScore)
     {
-        Debug.Log($"[UIManager] shockwave outcome={outcome} total={totalScore:0.00}");
+        Debug.Log($"[UIManager] timed outcome={outcome} total={totalScore:0.00}");
         RefreshScoreText();
 
         bool detected = outcome == ShockwaveOutcome.Detected;
@@ -162,7 +192,8 @@ public class UIManager : MonoBehaviour
         {
             ShockwaveOutcome.Detected => calloutShockwaveHitText,
             ShockwaveOutcome.Early    => calloutShockwaveEarlyText,
-            _                          => calloutShockwaveLateText,
+            ShockwaveOutcome.Late     => calloutShockwaveLateText,
+            _                          => calloutOutOfTimeText,
         };
         ShowCallout(detected, text, detected ? calloutHitColor : calloutShockwaveFailColor);
     }
@@ -197,6 +228,24 @@ public class UIManager : MonoBehaviour
     }
 
     /// <summary>
+    /// Takes the callout down early. The TOO LATE re-gate puts TRY AGAIN! in the same spot, and
+    /// one word replacing another there is the handoff — two words stacked would be a mess.
+    /// Safe with no callout up.
+    /// </summary>
+    public void DismissCallout()
+    {
+        if (_calloutCoroutine != null)
+        {
+            StopCoroutine(_calloutCoroutine);
+            _calloutCoroutine = null;
+        }
+        if (_callout == null) return;
+        _calloutRect.anchoredPosition = Vector2.zero;
+        _callout.transform.localScale = Vector3.one;
+        _callout.enabled = false;
+    }
+
+    /// <summary>
     /// The cannon's screen flash. Fired by <see cref="ShockwaveCannon"/> at the moment of
     /// detonation, ahead of whichever outcome flash the trial resolves into a beat later — the
     /// blast happens whether or not the timing was right, so the flash cannot be part of the
@@ -222,6 +271,80 @@ public class UIManager : MonoBehaviour
     {
         if (manager != null) scoreManager = manager;
         RefreshScoreText();
+        RefreshProgress();
+    }
+
+    /// <summary>
+    /// Re-reads how far the phase is from ending and sets the bar moving toward it. Called once
+    /// per response (after the posterior and the round count have moved) and at every phase
+    /// start — the read is cheap, but it is the spring in Update that then rebuilds the canvas
+    /// each frame, and only until the bar has settled.
+    ///
+    /// A target of 0 is a fresh phase and resets the never-go-backward peak; anything else can
+    /// only raise it. A reset does not animate: the bar empties under the between-phase prompt,
+    /// where a fill winding back down would read as something being taken away.
+    /// </summary>
+    public void RefreshProgress()
+    {
+        if (progressFill == null) return;
+
+        float target = PhaseProgress();
+        if (target <= 0f)
+        {
+            _progressPeak     = 0f;
+            _progressVelocity = 0f;
+            _progressSettled  = true;
+            SetProgressFill(0f);
+            return;
+        }
+
+        _progressPeak = Mathf.Max(_progressPeak, target);
+        if (!Mathf.Approximately(_progressPeak, _progressShown)) _progressSettled = false;
+    }
+
+    // Steps the progress spring. Unscaled time, like every HUD motion here: a stutter is a
+    // main-thread block, and a bar that paused with it would carry the stimulus.
+    void Update()
+    {
+        if (_progressSettled || progressFill == null) return;
+
+        float next = progressSmoothSec > 0f
+            ? Mathf.SmoothDamp(_progressShown, _progressPeak, ref _progressVelocity,
+                               progressSmoothSec, Mathf.Infinity, Time.unscaledDeltaTime)
+            : _progressPeak;
+
+        // Close enough to land: snap the last sliver rather than creep at it for frames the eye
+        // cannot see, each one a canvas rebuild.
+        if (Mathf.Abs(_progressPeak - next) < 0.0005f)
+        {
+            next              = _progressPeak;
+            _progressVelocity = 0f;
+            _progressSettled  = true;
+        }
+        SetProgressFill(next);
+    }
+
+    // Practice counts rounds against the ladder; the main run asks the staircase. With no
+    // director at all — a hand-played scene — the staircase alone decides.
+    float PhaseProgress()
+    {
+        PerturbationController p = gameManager != null ? gameManager.perturbation : null;
+        if (p == null) return 0f;
+
+        if (p.PracticeMode)
+            return ExperimentDirector.Instance != null ? ExperimentDirector.Instance.PracticeProgress : 0f;
+
+        return RoundProgress.Of(p.ActiveStaircase as QuestPlusStaircase, p.PosteriorSDMs);
+    }
+
+    // The fill is anchor-stretched to its track, so its right anchor IS the fraction — no sprite,
+    // no fill-method, and it follows the track through any resize.
+    void SetProgressFill(float fraction)
+    {
+        _progressShown = fraction;
+        progressFill.anchorMax = new Vector2(Mathf.Clamp01(fraction), 1f);
+        progressFill.offsetMin = Vector2.zero;
+        progressFill.offsetMax = Vector2.zero;
     }
 
     // ── Setup ─────────────────────────────────────────────────────────────
@@ -233,7 +356,11 @@ public class UIManager : MonoBehaviour
         if (gameManager  == null) gameManager  = FindAnyObjectByType<GameManager>();
         if (scoreManager == null && gameManager != null) scoreManager = gameManager.scoreManager;
         if (scoreText    == null) scoreText = FindTextByName("ScoreText");
-        if (roundText    == null) roundText = FindTextByName("RoundText");
+        if (progressFill == null)
+        {
+            Transform fill = FindChildRecursive(transform, "ProgressFill");
+            if (fill != null) progressFill = fill as RectTransform;
+        }
     }
 
     void BuildOverlays()
@@ -349,10 +476,7 @@ public class UIManager : MonoBehaviour
     void RefreshScoreText()
     {
         float total = scoreManager != null ? scoreManager.TotalScore : 0f;
-        int   shots = scoreManager != null ? scoreManager.ShotCount  : 0;
-
         if (scoreText != null) scoreText.text = $"Score: {total:0}";
-        if (roundText != null) roundText.text = $"Round: {shots}";
     }
 
     // ── Flash ─────────────────────────────────────────────────────────────

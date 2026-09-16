@@ -66,7 +66,7 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// One log file inside a session folder, e.g. <c>Data/Logs/1/RoundLog_1.csv</c>. The ID
+        /// One log file inside a session folder, e.g. <c>Data/Logs/1/ShotLog_1.csv</c>. The ID
         /// is repeated in the filename as well as the folder so a file still identifies itself
         /// once it has been copied out into a pile of other participants' logs.
         ///

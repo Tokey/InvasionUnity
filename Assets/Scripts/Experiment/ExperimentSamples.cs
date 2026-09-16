@@ -13,13 +13,30 @@ namespace JndUfo
     public struct ShotSample
     {
         public int   roundNumber;           // 1-based within the phase
+        /// <summary>1-based index of this response within its round. A shockwave round logs one
+        /// row per press (early, late, detected) plus one for a round that ran out, so several
+        /// rows can share a roundNumber; a laser round is always one row.</summary>
+        public int   attemptInRound;
+        /// <summary>True on the row that closed the round — the one followed by the reveal.</summary>
+        public bool  roundEnded;
+        /// <summary>Shockwave: stutters delivered so far this round when this response was made —
+        /// the presentation it answers, 1-based; 0 for a press before the round's first (an early
+        /// press after a TRY AGAIN! carries the count so far, since the round's stutters are
+        /// behind it even though none is since the gate). Laser: tower crossings so far this round.</summary>
+        public int   spikeIndexInRound;
         public float timeSinceStartSec;
         public float timeSinceLastShotSec; // equals timeSinceStartSec for the first trial
 
         /// <summary>The stutter size presented for this trial (ms) — the stimulus.</summary>
         public float stimulusMs;
-        /// <summary>Tower crossings that fired a stutter since the previous shot.</summary>
+        /// <summary>Stutters delivered since the previous logged response — tower crossings on a
+        /// laser block, timed presentations on a shockwave one.</summary>
         public int   spikesSinceLastShot;
+        /// <summary>Presses swallowed since the previous logged response — inside the early
+        /// lockout, or under EarlyFirePolicy.IgnoreAndContinue. They produced no shot and no row,
+        /// so this is the only count of them; each still shows in the frame log as a press with
+        /// shotFired false.</summary>
+        public int   swallowedPresses;
 
         // ── Stutters actually delivered before this shot ─────────────────────
         // Measured durations, not requested ones, so comparing these against stimulusMs
@@ -28,6 +45,9 @@ namespace JndUfo
 
         /// <summary>Each stutter, oldest first, as "50.12;52.44;70.19". Empty if none fired.</summary>
         public string stuttersMs;
+        /// <summary>When each of those finished, phase clock, same order as stuttersMs:
+        /// "3.4120;5.0187". The last entry equals spikeAtSec on a shockwave block.</summary>
+        public string stutterAtSec;
         public float  stutterMeanMs;
         /// <summary>Population SD (÷n), so it is 0 rather than undefined for a single stutter.</summary>
         public float  stutterSdMs;
@@ -41,14 +61,14 @@ namespace JndUfo
         // Empty / NaN on a laser block, where the stutter is triggered by the participant's own
         // movement and there is no window to answer it in.
 
-        /// <summary>How the trial ended: <c>shot</c> (laser), or <c>detected</c> / <c>early</c> /
-        /// <c>timeout</c> (shockwave). <c>early</c> and <c>timeout</c> are both misses, but they
-        /// are opposite mistakes, so they must not be collapsed in the log the way isHit does.</summary>
+        /// <summary>How the response resolved: <c>shot</c> (laser), <c>detected</c> / <c>early</c> /
+        /// <c>late</c> (shockwave presses), or <c>timeout</c> / <c>expired</c> (either weapon, a
+        /// round that ran out of stutters or of clock with no shot). The failures are different
+        /// mistakes, so they must not be collapsed in the log the way isHit does.</summary>
         public string outcome;
 
-        /// <summary>False only for an shockwave timeout, where the trial completed with no shot.
-        /// Everything positional in this row is the UFO's resting position rather than a landing
-        /// point when this is false.</summary>
+        /// <summary>False only for a round that ran out with no shot. Everything positional in
+        /// this row is the UFO's resting position rather than a landing point when this is false.</summary>
         public bool playerFired;
 
         /// <summary>Whether this response reached the QUEST+ posterior. False for practice trials
@@ -72,8 +92,10 @@ namespace JndUfo
         /// <summary>Phase-relative time the participant fired. NaN on a timeout.</summary>
         public float firedAtSec;
 
-        /// <summary>firedAtSec - spikeAtSec: the response time. NaN unless a stutter was delivered
-        /// AND answered, so it is defined only for detections.</summary>
+        /// <summary>firedAtSec - spikeAtSec: how long after the stutter the press came. Defined
+        /// only where the press answers that stutter — a detection (inside the window) or a late
+        /// press (after it). NaN for early presses, even one made after a TRY AGAIN! with a
+        /// stutter earlier in the round: that press answers nothing.</summary>
         public float reactionSec;
 
         /// <summary>The delay this trial drew for its stutter (s) — the interval the participant
@@ -114,7 +136,10 @@ namespace JndUfo
     /// </summary>
     public struct TickSample
     {
-        public int   roundNumber;           // trials completed so far this phase
+        /// <summary>The round this frame belongs to — the same 1-based number the shot log gives
+        /// it, so the two files join on it directly. A shot's frame carries the shot row's
+        /// roundNumber; the reveal frames after a round closes already carry the next one.</summary>
+        public int   roundNumber;
         public int   frameIndex;           // 0-based within the phase
         public float timeSinceStartSec;
         public float unscaledDeltaMs;      // this frame's real duration — the stutter shows here

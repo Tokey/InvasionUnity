@@ -262,19 +262,34 @@ Three files, joined on `sessionId`. **All three carry the full `cfg_*` settings 
 one file states the conditions it was recorded under without a join back to
 ExperimentConfig.csv or to the session row.
 
-**SessionLog** — 1 row: identity/timing, the QUEST+ result (`jndEstimateMs`,
-`posteriorThresholdSD`, `slopeEstimate`, `staircaseTrials`, `endReason`), performance totals,
-miss-distance statistics, movement totals, frame timing, delivered stutters, and the config echo.
+**SessionLog** — 1 row per *block* (each row of ExperimentConfig.csv is its own QUEST+ run):
+identity/timing, the QUEST+ result (`jndEstimateMs`, `sd`, `slopeEstimate`, `lapseEstimate`,
+`staircaseTrials`, `endReason` = converged / maxTrials / timeCap / abandoned), performance
+totals, the shockwave outcome counts (`swDetections`, `swEarlyFires`, `swLateFires`,
+`swTimeouts`, `swSwallowedPresses`, `trialsNotCounted`) and reaction-time summary,
+miss-distance statistics, movement totals, frame timing, delivered stutters, and the config
+echo. Practice is not summarised here — it never reaches the posterior.
 
-**ShotLog** — 1 row per trial: `phase`, `trialIndex`, timings, `stimulusMs`,
-`spikesSinceLastShot`, `isHit`, `totalScore`, `missDistX`, `towerX`, `ufoY`, `side`, and the
-QUEST+ posterior *after* that response (`threshEstimateMs`, `posteriorSD`, `slopeEstimate`) —
-so the convergence trace is recoverable trial by trial.
+**ShotLog** — 1 row per *response*, not per round: `phase`, `roundNumber`, `attemptInRound`,
+`roundEnded`, timings, `stimulusMs`, then what preceded the response — `spikesSinceLastShot`,
+`spikeIndexInRound`, `swallowedPresses` (button presses that never became a shot: the lockout
+after TOO EARLY, or `IgnoreAndContinue`), and the stutters themselves as parallel lists
+`stuttersMs` / `stutterAtSec` (measured size and phase-clock instant of each, oldest first) with
+their summary — then `isHit`, `totalScore`, the shockwave verdict (`outcome` =
+detected/early/late/timeout/expired, `playerFired`, `countedByStaircase`, `trialStartSec`,
+`spikeAtSec`, `firedAtSec`, `reactionSec`, `spikeDelaySec`, `windowSec`), the geometry
+(`hitX`, `missDistX`, `towerX`, `ufoY`, `side`), and the QUEST+ posterior *after* that response
+(`threshEstimateMs`, `sd`, `slopeEstimate`, `lapseEstimate`) — so the convergence trace is
+recoverable trial by trial. A shockwave round that took an early press and a late press before
+its detection is three rows sharing a `roundNumber`; only the last has `roundEnded` set, and
+`countedByStaircase` says which of them QUEST+ heard (early presses under the default
+`DiscardAndRetry` policy: never; practice rows: never).
 
-**PlayerLog** — 1 row per rendered frame: `phase`, `trialIndex`, `frameIndex`, timings, raw
-mouse position and delta, UFO and tower X, `side`, button states, `stimulusMs`, `spikeFired`,
-`stutterMs`, plus the live `threshEstimateMs` / `posteriorSD` / `slopeEstimate` / `accuracy` /
-`score`, then the `cfg_*` echo.
+**PlayerLog** — 1 row per rendered frame: `phase`, `roundNumber`, `frameIndex`, timings, raw
+mouse position and delta, UFO and tower X, `side`, button states, `shotFired`, `stimulusMs`,
+`spikeFired`, `stutterMs`, `windowOpen`, plus the live `threshEstimateMs` / `sd` /
+`slopeEstimate` / `lapseEstimate` / `accuracy` / `score`, then the `cfg_*` echo. A press that
+was swallowed shows here as `leftButtonPressed` with `shotFired` false.
 
 Derivable columns are deliberately absent: `hitX` is `towerX + missDistX`, `absMissDistX` is its
 magnitude, `shotsMissed` is `shotsFired − shotsHit`, and the Euclidean miss equals the X miss
@@ -290,8 +305,13 @@ because everything sits on the same fixedZ plane.
   the ~2k-cell parameter grid every frame, in exactly the place this study measures frame times.
 - A stutter executes at the *end* of the frame that sets `spikeFired`, so the long
   `unscaledDeltaMs` it causes lands on the **following** row.
-- A session abandoned by quitting leaves its trial and frame rows on disk but **no** session
-  summary row — that is written only when the run properly ends.
+- A session abandoned by quitting still leaves everything on disk: its trial and frame rows,
+  and a session row for the block in progress with `endReason = abandoned` (its QUEST+ columns
+  are the posterior as of the last response). Quitting during practice, before the main run
+  opens, writes the rows but no summary — there is nothing to summarise yet.
+- `roundNumber` means the same thing in ShotLog and PlayerLog: the 1-based round the row
+  belongs to, so the two join on it directly. Practice restarts at 1; main rounds continue
+  across blocks.
 
 ## Caveats
 - `Application.targetFrameRate = 500` is a **cap, not a guarantee**, and the Editor adds

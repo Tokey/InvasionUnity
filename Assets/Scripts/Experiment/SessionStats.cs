@@ -61,18 +61,25 @@ namespace JndUfo
         public float TotalStutterMs  { get; private set; }
         public float LastStimulusMs { get; private set; } = float.NaN;
 
-        // ── Shockwave trials ────────────────────────────────────────────────
-        // All zero on a laser block. Early and late failures are counted apart because they are
-        // opposite mistakes: a run full of early fires means the participant is guessing the
-        // rhythm, a run full of timeouts means they genuinely could not see the stutter, and
-        // "accuracy" alone reads identically for both.
+        // ── Timed outcomes ──────────────────────────────────────────────────
+        // Early, late and timeout are counted apart because they are different mistakes: a run
+        // full of early fires means the participant is guessing the rhythm, a run full of late
+        // fires means they are seeing something but slowly, a run full of timeouts means they
+        // genuinely could not see the stutter — and "accuracy" alone reads identically for all.
 
-        /// <summary>Trials answered inside the response window.</summary>
+        /// <summary>Responses inside the response window. Shockwave only.</summary>
         public int ShockwaveDetections { get; private set; }
-        /// <summary>Trials ended by an anticipatory press, before the stutter ran.</summary>
+        /// <summary>Presses before the round's first stutter. Shockwave only.</summary>
         public int ShockwaveEarly      { get; private set; }
-        /// <summary>Trials where the window closed unanswered.</summary>
+        /// <summary>Presses after the window had closed. Shockwave only.</summary>
+        public int ShockwaveLate       { get; private set; }
+        /// <summary>Rounds that ran out with no shot — stutter allowance spent or wall clock
+        /// expired. Either weapon.</summary>
         public int ShockwaveTimeouts   { get; private set; }
+        /// <summary>Presses that never became a shot: inside the lockout after a TOO EARLY press,
+        /// or under EarlyFirePolicy.IgnoreAndContinue. A high count is a participant hammering
+        /// the button, which the outcome counts above cannot show. Shockwave only.</summary>
+        public int SwallowedPresses    { get; private set; }
         /// <summary>Trials that were logged but withheld from the QUEST+ posterior.</summary>
         public int TrialsNotCounted     { get; private set; }
 
@@ -91,10 +98,13 @@ namespace JndUfo
         //   Laser       stutters fire on tower crossings, so this is how many crossings the
         //               participant flew before taking the shot. Zero means they shot without
         //               ever crossing the tower — a trial with no stimulus in it at all.
-        //   Shockwave  the stutter is on a timer and there is exactly one per trial, so this is
-        //               0 or 1, and zero is precisely the anticipatory press. ShotsBeforeSpike
-        //               is therefore the early-fire count arrived at independently of how the
-        //               trial was classified, which is what makes the two cross-checkable.
+        //   Shockwave  the stutter is on a timer, presented again after each unanswered window,
+        //               so this is how many presentations went by before the response — 1 for
+        //               a detection of the first, more for a slow one or a timeout. Zero is a
+        //               press with no stutter behind it since the previous response: the
+        //               anticipatory press at a round's start, or one that jumped a TRY AGAIN!.
+        //               ShotsBeforeSpike is therefore an early-fire count arrived at independently
+        //               of how the trial was classified, which is what makes the two cross-checkable.
 
         /// <summary>Trials answered with NO stutter delivered since the previous trial — the shot
         /// came before any stimulus it could have been a response to.</summary>
@@ -162,11 +172,17 @@ namespace JndUfo
             {
                 case "detected": ShockwaveDetections++; break;
                 case "early":    ShockwaveEarly++;      break;
-                case "timeout":  ShockwaveTimeouts++;   break;
+                case "late":     ShockwaveLate++;       break;
+                case "timeout":
+                case "expired":  ShockwaveTimeouts++;   break;
             }
+            SwallowedPresses += s.swallowedPresses;
             if (!s.countedByStaircase) TrialsNotCounted++;
 
-            if (!float.IsNaN(s.reactionSec))
+            // Detections only. A late press also has a reaction time — the row keeps it — but
+            // folding it in here would make "how fast do they answer" read as "how slow were they
+            // when they failed".
+            if (s.outcome == "detected" && !float.IsNaN(s.reactionSec))
             {
                 _reactionTimes.Add(s.reactionSec);
                 if (float.IsNaN(MinReactionSec) || s.reactionSec < MinReactionSec) MinReactionSec = s.reactionSec;

@@ -62,8 +62,8 @@ NULLS = {"", "nan", "NaN", "NAN", "-nan", "Infinity", "-Infinity", "∞"}
 
 BOOL_COLUMNS = {"isHit", "spikeFired", "shotFired", "leftButtonDown",
                 "leftButtonPressed", "fireKeyDown",
-                # antimatter
-                "playerFired", "countedByStaircase", "windowOpen"}
+                # shockwave / round clock
+                "playerFired", "countedByStaircase", "windowOpen", "roundEnded"}
 
 
 # ---------------------------------------------------------------- csv
@@ -282,6 +282,8 @@ def explode_stutters(con):
     cols = {r[1] for r in con.execute("PRAGMA table_info(shot)")}
     if "stuttersMs" not in cols:
         return 0
+    # When each stutter landed (phase clock), parallel to stuttersMs. Older logs lack it.
+    has_at = "stutterAtSec" in cols
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS stutter (
@@ -289,23 +291,34 @@ def explode_stutters(con):
             shot_id    INTEGER NOT NULL REFERENCES shot(shot_id),
             block_id   INTEGER NOT NULL REFERENCES block(block_id),
             ordinal    INTEGER NOT NULL,
-            durationMs REAL    NOT NULL
+            durationMs REAL    NOT NULL,
+            atSec      REAL
         )""")
 
+    at_col = "stutterAtSec" if has_at else "NULL"
     payload = []
-    for shot_id, bid, listed in con.execute(
-            "SELECT shot_id, block_id, stuttersMs FROM shot WHERE stuttersMs IS NOT NULL"):
+    for shot_id, bid, listed, at_listed in con.execute(
+            f"SELECT shot_id, block_id, stuttersMs, {at_col} FROM shot "
+            "WHERE stuttersMs IS NOT NULL"):
+        ats = str(at_listed).split(";") if at_listed is not None else []
         for i, part in enumerate(str(listed).split(";")):
             part = part.strip()
             if not part:
                 continue
             try:
-                payload.append((shot_id, bid, i, float(part)))
+                duration = float(part)
             except ValueError:
-                pass
+                continue
+            at = None
+            if i < len(ats):
+                try:
+                    at = float(ats[i])
+                except ValueError:
+                    pass
+            payload.append((shot_id, bid, i, duration, at))
 
     con.executemany(
-        "INSERT INTO stutter (shot_id, block_id, ordinal, durationMs) VALUES (?,?,?,?)",
+        "INSERT INTO stutter (shot_id, block_id, ordinal, durationMs, atSec) VALUES (?,?,?,?,?)",
         payload)
     return len(payload)
 

@@ -38,9 +38,26 @@ namespace JndUfo
         /// </summary>
         public bool FreezeMovement { get; set; }
 
+        /// <summary>
+        /// True while the UFO is withdrawn from view — between rounds, under the reset veil.
+        /// Only the visuals go: the controller keeps tracking the pointer so unhiding does not
+        /// replay everything the mouse did in the meantime as one jump, and the object stays
+        /// active so nothing that lives on it (the cannon, the latency buffer) skips a beat.
+        /// </summary>
+        public bool Hidden { get; private set; }
+
         InputLatencyBuffer _input;
         Vector2            _prevDelayedPos;
         bool               _initialized;
+
+        // Everything that draws the UFO, gathered once on first use — well after every Awake,
+        // so the cannon's arc and the pointer glow are in the list. Alongside it, what each one
+        // was doing when the UFO was hidden, so unhiding puts back exactly that: a renderer that
+        // was off for its own reasons (the arc between shots) is not switched on by mistake.
+        Renderer[] _renderers;
+        Light[]    _lights;
+        bool[]     _rendererWasOn;
+        bool[]     _lightWasOn;
 
         void Awake()
         {
@@ -87,15 +104,19 @@ namespace JndUfo
             if (screenDelta.sqrMagnitude < 1e-8f) return;
 
             Vector3 worldDelta = ScreenDeltaToWorld(cam, screenDelta);
+            transform.position = Clamped(cam, transform.position + worldDelta);
+        }
 
-            // Compute Y ceiling.
+        // The flight envelope: X from the viewport's edges, Y between the floor and either the
+        // configured ceiling or just under the top of the view.
+        Vector3 Clamped(Camera cam, Vector3 pos)
+        {
             float ceilY = maxY > 0f
                 ? maxY
                 : (rig != null
                     ? rig.ViewCenterAtZ(fixedZ).y + rig.ViewHalfExtentsAtZ(fixedZ).y * 0.95f
                     : 20f);
 
-            // Compute X bounds from viewport.
             float minX, maxX;
             if (cam != null)
             {
@@ -106,11 +127,54 @@ namespace JndUfo
             }
             else { minX = -20f; maxX = 20f; }
 
-            Vector3 newPos = transform.position + worldDelta;
-            newPos.x = Mathf.Clamp(newPos.x, minX, maxX);
-            newPos.y = Mathf.Clamp(newPos.y, minY, ceilY);
-            newPos.z = fixedZ;
-            transform.position = newPos;
+            pos.x = Mathf.Clamp(pos.x, minX, maxX);
+            pos.y = Mathf.Clamp(pos.y, minY, ceilY);
+            pos.z = fixedZ;
+            return pos;
+        }
+
+        /// <summary>
+        /// Withdraws the UFO from view, or puts it back exactly as it was. Cheap enough to toggle
+        /// every frame — the reset gate blinks it — since the lists are built once and nothing
+        /// allocates after that.
+        /// </summary>
+        public void SetHidden(bool hidden)
+        {
+            if (hidden == Hidden) return;
+            Hidden = hidden;
+
+            if (_renderers == null)
+            {
+                _renderers      = GetComponentsInChildren<Renderer>(includeInactive: true);
+                _lights         = GetComponentsInChildren<Light>(includeInactive: true);
+                _rendererWasOn  = new bool[_renderers.Length];
+                _lightWasOn     = new bool[_lights.Length];
+            }
+
+            // Null checks because the list is built once: a child that has since been destroyed
+            // is skipped rather than allowed to throw from the middle of the reset.
+            if (hidden)
+            {
+                for (int i = 0; i < _renderers.Length; i++)
+                {
+                    if (_renderers[i] == null) continue;
+                    _rendererWasOn[i]     = _renderers[i].enabled;
+                    _renderers[i].enabled = false;
+                }
+                for (int i = 0; i < _lights.Length; i++)
+                {
+                    if (_lights[i] == null) continue;
+                    _lightWasOn[i]     = _lights[i].enabled;
+                    _lights[i].enabled = false;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < _renderers.Length; i++)
+                    if (_renderers[i] != null) _renderers[i].enabled = _rendererWasOn[i];
+                for (int i = 0; i < _lights.Length; i++)
+                    if (_lights[i] != null) _lights[i].enabled = _lightWasOn[i];
+            }
         }
 
         // Converts a screen-space delta (pixels) to a world-space delta on the fixedZ plane.

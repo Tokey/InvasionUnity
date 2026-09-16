@@ -78,14 +78,17 @@ namespace JndUfo
         public bool spikeUseBusyWait = true;
 
         [Header("Shockwave")]
-        [Tooltip("What an anticipatory press — one made before the stutter has run — is worth to " +
-                 "QUEST+.\n\n" +
-                 "CountAsMiss: the trial fails and the posterior hears 'did not notice'.\n" +
-                 "DiscardAndRetry (default): it fails on screen and on the scoreboard, but QUEST+ " +
-                 "never hears it and the same stimulus is presented again — an early press " +
-                 "answered no stutter, so it is not evidence about the threshold.\n" +
-                 "IgnoreAndContinue: the press is swallowed entirely and the trial carries on — " +
-                 "no penalty, useful while piloting.\n\n" +
+        [Tooltip("What an anticipatory press — one made before the round's first stutter — is " +
+                 "worth to QUEST+. The round carries on toward its stutter under every policy; " +
+                 "this only decides what the posterior hears.\n\n" +
+                 "CountAsMiss: shown as too early, and the posterior hears 'did not notice'.\n" +
+                 "DiscardAndRetry (default): shown as too early and penalised on the scoreboard, " +
+                 "but QUEST+ never hears it — an early press answered no stutter, so it is not " +
+                 "evidence about the threshold.\n" +
+                 "IgnoreAndContinue: the press is swallowed entirely — no blast, no penalty, no " +
+                 "log row. Useful while piloting.\n\n" +
+                 "Forgiven presses are capped by swMaxEarlyPerRound in the CSV; one past the cap " +
+                 "forfeits the round as a counted miss under every policy.\n\n" +
                  "Only affects blocks whose weapon column is 'shockwave'.")]
         public EarlyFirePolicy earlyFirePolicy = EarlyFirePolicy.DiscardAndRetry;
 
@@ -190,8 +193,9 @@ namespace JndUfo
         ///
         /// realtimeSinceStartup, not unscaledTime: the latter is stamped once at the top of a
         /// frame, so reading it here would report the instant the stutter STARTED and quietly
-        /// subtract the whole stimulus from every reaction time. Same origin, so it is directly
-        /// comparable with the phase clock the logs use.
+        /// subtract the whole stimulus from every reaction time. Same origin as the frame clock
+        /// (ExperimentDirector verifies this each phase), so it rebases directly onto the phase
+        /// clock the logs use.
         /// </summary>
         public float LastSpikeEndRealtime { get; private set; } = float.NaN;
 
@@ -203,7 +207,10 @@ namespace JndUfo
         public WeaponKind Weapon { get; private set; } = WeaponKind.Laser;
 
         const int MaxLoggedStuttersPerShot = 256;
-        readonly List<float> _stuttersSinceShot = new List<float>(32);
+        readonly List<float> _stuttersSinceShot   = new List<float>(32);
+        // Parallel to the above: when each one finished (realtimeSinceStartup), so the shot log
+        // can say not just how many stutters preceded a response but when each landed.
+        readonly List<float> _stutterEndsSinceShot = new List<float>(32);
 
         // Running moments, kept alongside the list. The list is capped so a stuck round
         // can't grow it without bound, but these are updated on every stutter regardless,
@@ -225,7 +232,8 @@ namespace JndUfo
         public struct StutterBurst
         {
             public int    count;
-            public string listMs;   // "50.12;52.44;70.19", oldest first
+            public string listMs;    // "50.12;52.44;70.19", oldest first
+            public string listAtSec; // when each finished, on the caller's clock, same order
             public float  meanMs, sdMs, minMs, maxMs;
         }
 
@@ -240,9 +248,11 @@ namespace JndUfo
         /// delivered, not a sample drawn from some larger set, so the population form is the
         /// right one — and it stays defined at n = 1, where it is simply 0.
         /// </summary>
-        public StutterBurst TakeStutterBurst(int decimals = 2)
+        /// <param name="realtimeOrigin">The caller's clock zero on <see cref="Time.realtimeSinceStartup"/>;
+        /// each stutter's end is listed relative to it.</param>
+        public StutterBurst TakeStutterBurst(float realtimeOrigin, int decimals = 2)
         {
-            var burst = new StutterBurst { count = _stutterN, listMs = string.Empty };
+            var burst = new StutterBurst { count = _stutterN, listMs = string.Empty, listAtSec = string.Empty };
 
             if (_stutterN > 0)
             {
@@ -254,13 +264,16 @@ namespace JndUfo
                 burst.minMs  = _stutterMin;
                 burst.maxMs  = _stutterMax;
 
-                var sb = new StringBuilder(_stuttersSinceShot.Count * 7);
+                var ms = new StringBuilder(_stuttersSinceShot.Count * 7);
+                var at = new StringBuilder(_stuttersSinceShot.Count * 9);
                 for (int i = 0; i < _stuttersSinceShot.Count; i++)
                 {
-                    if (i > 0) sb.Append(';');
-                    sb.Append(_stuttersSinceShot[i].ToString("F" + decimals, CultureInfo.InvariantCulture));
+                    if (i > 0) { ms.Append(';'); at.Append(';'); }
+                    ms.Append(_stuttersSinceShot[i].ToString("F" + decimals, CultureInfo.InvariantCulture));
+                    at.Append((_stutterEndsSinceShot[i] - realtimeOrigin).ToString("F4", CultureInfo.InvariantCulture));
                 }
-                burst.listMs = sb.ToString();
+                burst.listMs    = ms.ToString();
+                burst.listAtSec = at.ToString();
             }
 
             ResetStutterBurst();
@@ -270,6 +283,7 @@ namespace JndUfo
         void ResetStutterBurst()
         {
             _stuttersSinceShot.Clear();
+            _stutterEndsSinceShot.Clear();
             _stutterN   = 0;
             _stutterSum = _stutterSumSq = 0f;
             _stutterMin = float.MaxValue;
@@ -439,12 +453,11 @@ namespace JndUfo
         /// <summary>
         /// Drops a stutter that has been scheduled but not yet delivered.
         ///
-        /// There is a one-frame window where an shockwave trial requests its stutter in Update and
-        /// the participant fires in the same frame, before LateUpdate has run it. That press is an
-        /// early fire — they cannot have reacted to a frame that has not been presented — so the
-        /// trial is over, and letting the stutter go off anyway would deliver a stimulus with no
-        /// trial attached to it: it would land in the NEXT trial's stutter burst and be logged
-        /// against a stimulus it was not presented for.
+        /// There is a one-frame window where a shockwave round requests its stutter in Update and
+        /// the participant fires in the same frame, before LateUpdate has run it. They cannot have
+        /// reacted to a frame that has not been presented, so the press is early (or late for the
+        /// previous stutter) and the round clock reschedules; letting this one go off anyway would
+        /// land it in the middle of the callout with its window already ticking.
         /// </summary>
         public void CancelPendingSpike() => _spikePending = false;
 
@@ -472,7 +485,10 @@ namespace JndUfo
             // so this only ever trips on a stuck round — and the count and the summary
             // above stay correct even then.
             if (_stuttersSinceShot.Count < MaxLoggedStuttersPerShot)
+            {
                 _stuttersSinceShot.Add(measured);
+                _stutterEndsSinceShot.Add(LastSpikeEndRealtime);
+            }
         }
 
         // ── Round setup ──────────────────────────────────────────────────────
@@ -529,6 +545,7 @@ namespace JndUfo
             ApplyFps();
             ApplyLatency();
             RefreshDebugText();
+            if (uiManager != null) uiManager.RefreshProgress();   // fresh staircase, empty bar
         }
 
         /// <summary>Stops driving the staircase; the round's final estimate stays readable
@@ -658,12 +675,12 @@ namespace JndUfo
         /// <summary>
         /// As above, but with the option to withhold the response from the posterior.
         ///
-        /// <paramref name="feedStaircase"/> is false for an shockwave trial the participant ended
-        /// prematurely under <see cref="EarlyFirePolicy.DiscardAndRetry"/>: no stutter was ever
+        /// <paramref name="feedStaircase"/> is false for a shockwave press made before the round's
+        /// first stutter under <see cref="EarlyFirePolicy.DiscardAndRetry"/>: no stutter had been
         /// delivered, so the press answered nothing and is not evidence about the threshold. The
-        /// stimulus is left untouched, which re-presents the same one next trial — QUEST+ selects
-        /// the next stimulus as part of folding in a response, so not folding one in is exactly
-        /// what "try that trial again" means.
+        /// stimulus is left untouched, which is what the round's stutter then presents — QUEST+
+        /// selects the next stimulus as part of folding in a response, so not folding one in is
+        /// exactly what "same trial, still pending" means.
         /// </summary>
         public void ReportShotResult(bool isHit, bool feedStaircase)
         {
@@ -710,7 +727,29 @@ namespace JndUfo
 
         // ── Debug UI ─────────────────────────────────────────────────────────
 
-        void RefreshDebugText()
+        /// <summary>
+        /// The round clock line for the debug HUD: elapsed seconds against the wall-clock cap,
+        /// and stutters delivered against the per-round cap. This is the ONLY place the round
+        /// bounds are visible — the participant is never shown a countdown, because a visible
+        /// clock is a second stimulus to time against. Empty when no round is running.
+        /// </summary>
+        string RoundClockLine()
+        {
+            ShockwaveTrialRunner r = ShockwaveTrialRunner.Instance;
+            if (r == null || !r.TrialRunning || _config == null) return "";
+
+            string clock = _config.roundTimeoutSec > 0f
+                ? $"{r.RoundElapsedSec:0}/{_config.roundTimeoutSec:0}s"
+                : $"{r.RoundElapsedSec:0}s";
+            string spikes = _config.maxSpikesPerRound > 0
+                ? $"{r.RoundSpikes}/{_config.maxSpikesPerRound}"
+                : r.RoundSpikes.ToString();
+            return $"\nRound: {clock}   spikes {spikes}";
+        }
+
+        /// <summary>Rebuilds the debug HUD line. Public so the round clock can refresh it once a
+        /// second; it is otherwise only rebuilt when a response moves the staircase.</summary>
+        public void RefreshDebugText()
         {
             if (uiManager == null) return;
 
@@ -727,9 +766,11 @@ namespace JndUfo
                 _                         => "×"
             };
 
+            string round = RoundClockLine();
+
             if (_staircase == null)
             {
-                uiManager.SetDebugText($"[{mode}]  staircase off");
+                uiManager.SetDebugText($"[{mode}]  staircase off{round}");
                 return;
             }
 
@@ -742,7 +783,8 @@ namespace JndUfo
                 uiManager.SetDebugText(
                     $"[{mode}]  {cur:0.0}{unit}   QUEST+\n" +
                     $"Prev: {prevStr}   T:{trials}/{qp.Config.maxTrials}   Streak:{qp.Streak}\n" +
-                    $"θ̂={qp.JndEstimate():0.0}{unit}  SD={qp.PosteriorThresholdSD():0.0}  β̂={qp.SlopeEstimate():0.00}");
+                    $"θ̂={qp.JndEstimate():0.0}{unit}  SD={qp.PosteriorThresholdSD():0.0}  β̂={qp.SlopeEstimate():0.00}" +
+                    round);
                 return;
             }
 
@@ -752,7 +794,7 @@ namespace JndUfo
 
             uiManager.SetDebugText(
                 $"[{mode}]  {cur:0.0}{unit}   {uf.Phase}\n" +
-                $"Prev: {prevStr}   T:{trials}  R:{rev}/{revEnd}   Streak:{uf.Streak}");
+                $"Prev: {prevStr}   T:{trials}  R:{rev}/{revEnd}   Streak:{uf.Streak}{round}");
         }
 
         // ── Apply helpers ────────────────────────────────────────────────────

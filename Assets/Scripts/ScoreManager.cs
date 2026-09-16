@@ -85,6 +85,9 @@ namespace JndUfo
             LastShotScore = 0f;
             LastShotDistance = 0f;
             ShotCount = 0;
+            // Announced like a shot, so the HUD drops to 0 with the reset — otherwise it kept
+            // showing the practice score under the main-run prompt until the first main shot.
+            OnScored?.Invoke(0f, 0f, 0f);
         }
     }
 }

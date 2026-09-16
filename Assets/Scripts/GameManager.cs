@@ -43,6 +43,22 @@ namespace JndUfo
                  "before firing is handed back. Set to 0 to hand it straight back with no beat.")]
         [Min(0f)] public float readyBeatDuration = 1f;
 
+        [Tooltip("How fast the UFO blinks while GO! is up, in blinks per second. The UFO is hidden " +
+                 "for the whole reset and reappears on the starting gun where the last round " +
+                 "left it, blinking, so the participant's eye is pulled back to it before play " +
+                 "begins rather than left hunting for it after the veil.")]
+        [Min(1f)] public float ufoFlashHz = 8f;
+
+        [Header("Re-gate  (shockwave, after TOO LATE)")]
+        [Tooltip("Seconds the TOO LATE! callout and the blast get the screen to themselves before " +
+                 "TRY AGAIN! replaces the callout. Long enough for the callout's bounce to finish " +
+                 "and the word to be read; the callout's own hold is cut short after that.")]
+        [Min(0f)] public float regateCalloutHoldSec = 0.5f;
+        [Tooltip("Seconds TRY AGAIN! holds and shakes before firing comes back — the re-gate's " +
+                 "whole starting gun. Same length as the round reset's GO! so both guns land " +
+                 "with the same rhythm.")]
+        [Min(0f)] public float regateRetrySec = 0.5f;
+
         [Header("Camera Pan")]
         [Tooltip("Seconds the camera takes to slide to its new vantage point after a shot. " +
                  "Frame-time stutters are suppressed for the whole pan.")]
@@ -59,10 +75,15 @@ namespace JndUfo
         public float skyboxSpinAmount = 60f;
 
         Coroutine _revealCoroutine;
+        Coroutine _regateCoroutine;
+        Coroutine _blinkCoroutine;
 
         /// <summary>True while a shot's reveal sequence is playing. ExperimentDirector waits on
         /// this at the end of a round so a shot fired on the buzzer still gets its reveal.</summary>
         public bool IsRevealing => _revealCoroutine != null;
+
+        /// <summary>True while a TOO LATE re-gate (TRY AGAIN!) is up.</summary>
+        public bool IsRegating => _regateCoroutine != null;
 
         void Awake()
         {
@@ -170,40 +191,193 @@ namespace JndUfo
             //    — and a long frame anywhere in it is visible motion the participant has no way to
             //    tell apart from a deliberate stutter. Under the veil there is nothing moving to
             //    judge, so an accidental hitch simply cannot be read as a stimulus.
-            Overlay?.ShowGateHold();
+            //
+            //    It opens on "SAVING…" rather than "READY…": the round's log rows are written to
+            //    disk here, and that write is the one hitch in the sequence that is deliberate.
+            //    Flushing per round rather than per phase keeps the tick buffer small and puts the
+            //    I/O at a known moment under the veil — instead of leaving it to grow all block and
+            //    land its cost wherever the runtime decides. The label goes up a frame BEFORE the
+            //    write, so what the participant sees is a labelled pause rather than a frozen word.
+            //
+            //    The UFO goes with it. Hidden and frozen for the whole reset, it cannot be watched
+            //    for motion under the veil — the one thing still moving there would otherwise be
+            //    the participant's own hand — and it comes back only on the starting gun, below.
+            //    Words only if there is a GO! to follow them. When this round closed the phase —
+            //    the last practice round, the trial that finished the staircase — the director
+            //    has already dropped the round, and the veil goes up bare: the reset still plays
+            //    under it (the next prompt lands on the scene it leaves), but the participant is
+            //    not counted in to a start that is not coming. Decided once, here: a phase that
+            //    ends mid-reveal is caught by the second check below.
+            bool live = RoundLive;
+            if (live) Overlay?.ShowGateSaving();
+            else      Overlay?.ShowGateVeil();
+            if (ufo != null)
+            {
+                ufo.SetHidden(true);
+                ufo.FreezeMovement = true;
+            }
+            yield return null;
+            if (ExperimentDirector.Instance != null) ExperimentDirector.Instance.FlushLogs();
+            if (live) Overlay?.ShowGateHold();
 
-            // Fog returns; skybox spins simultaneously to sell the location change.
+            // 7. Fog returns, skybox spins and the camera pans, all at once: one movement under
+            //    the veil rather than three beats in a row. They can overlap because the fog
+            //    simulates in the emitter's local space and follows the camera (see
+            //    TowerManager.ConfigureFogBudget), so the bank re-seals in place while the view
+            //    slides. The tower is placed only AFTER the pan — MoveTowerToRandomPosition picks
+            //    its X from the camera's current viewport, so placing it earlier would let the pan
+            //    re-centre the view on it and the tower would land in the same place on screen
+            //    every trial.
             float spinDir = Random.value > 0.5f ? 1f : -1f;
             StartCoroutine(SpinSkybox(skyboxSpinAmount * spinDir, fogRestoreDuration));
-            yield return StartCoroutine(towerManager.FadeFog(1f, fogRestoreDuration));
-
-            // 7. Reset: pan to a new vantage point FIRST, then hide a fresh tower somewhere in
-            //    the view it lands on. Order matters — MoveTowerToRandomPosition picks its X
-            //    from the camera's current viewport, so panning afterwards would just re-centre
-            //    the view on whatever it picked and the tower would appear in the same place on
-            //    screen every trial.
+            Coroutine fogReturn = StartCoroutine(towerManager.FadeFog(1f, fogRestoreDuration));
             yield return StartCoroutine(PanScene());
+            yield return fogReturn;
             towerManager.MoveTowerToRandomPosition();
             towerManager.ApplyVisibility();
 
             // Don't hand firing back if the round's timer expired while this reveal was playing —
-            // the director has already closed the round out.
-            bool roundOver = ExperimentDirector.Instance != null && !ExperimentDirector.Instance.RoundActive;
-            if (roundOver)
+            // the director has already closed the round out. The UFO still has to come back, or
+            // the next phase would open on an empty sky.
+            if (!RoundLive)
             {
                 Overlay?.HideGate();
+                RestoreUfo();
                 _revealCoroutine = null;
                 yield break;
             }
 
-            // "GO!", shaken, then the gate lifts and firing comes back on the same frame — so the
-            // starting gun the participant sees and the instant their shots start counting are the
-            // same event. The shockwave clock arms off this edge too, which is what stops a trial
-            // from quietly beginning while the camera was still moving.
-            if (Overlay != null) yield return Overlay.GoBeat(readyBeatDuration);
+            yield return StartingGun();
 
             if (laser != null) laser.SetFiringEnabled(true);
             _revealCoroutine = null;
+        }
+
+        /// <summary>
+        /// The round reset's starting gun. (The TOO LATE re-gate has its own, lighter one — see
+        /// RegateSequence — since nothing in the scene has changed under it.)
+        ///
+        /// The UFO reappears where the last round left it, blinking for as long as GO! is up. It
+        /// was frozen under the veil (and carried along with any pan, see PanScene), so it comes
+        /// back at the same place on screen it vanished from — the participant's hand is still
+        /// there, and continuing from it is what keeps the pointer feeling continuous across
+        /// rounds. Blinking, so the eye is pulled back to it before play begins. It stays frozen
+        /// through the beat, and the side baseline is taken afresh because the tower has moved
+        /// since the pan's own reset, so the first frame of play cannot report a crossing that
+        /// never happened.
+        ///
+        /// "GO!", shaken, then the gate lifts — and the caller hands firing back on the frame this
+        /// returns, so the starting gun the participant sees and the instant their shots start
+        /// counting are the same event. The shockwave clock arms (or resumes) off that edge too,
+        /// which is what stops a trial from quietly beginning while the scene was still moving.
+        /// </summary>
+        IEnumerator StartingGun()
+        {
+            if (ufo != null)
+            {
+                if (perturbation != null) perturbation.ResetSideTracking();
+                StopBlink();
+                _blinkCoroutine = StartCoroutine(BlinkUfo());
+            }
+
+            if (Overlay != null) yield return Overlay.GoBeat(readyBeatDuration);
+
+            RestoreUfo();
+        }
+
+        // Whether the director still has a round open for firing to come back to. True with no
+        // director at all — a hand-played scene has nothing to close the round.
+        bool RoundLive =>
+            ExperimentDirector.Instance == null || ExperimentDirector.Instance.RoundActive;
+
+        // ── Re-gate ──────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// The shockwave task's answer to a late press: TOO LATE!, then TRY AGAIN! in its place,
+        /// then firing is back. No scene reset, no veil, no READY…, and the UFO never leaves.
+        ///
+        /// The round is still open — the same stimulus comes again — but the participant has just
+        /// been told they were late, and dropping the next stutter into the tail of that callout
+        /// would ask them to answer it while still reading why they failed the last one. One
+        /// shaken word draws the line under the miss and gives the next presentation the same
+        /// defined starting gun a round has, so the delay before it is as unpredictable as a
+        /// round's first — and it is the lightest thing that can do that job: nothing in the
+        /// scene has changed, so there is nothing for a veil to cover.
+        ///
+        /// Firing is withheld for the gate's whole length, and the trial clock holds rather than
+        /// cancels (see <see cref="ShockwaveTrialRunner"/>).
+        /// </summary>
+        void StartRegate()
+        {
+            if (_regateCoroutine != null) StopCoroutine(_regateCoroutine);
+            _regateCoroutine = StartCoroutine(RegateSequence());
+        }
+
+        IEnumerator RegateSequence()
+        {
+            if (laser != null) laser.SetFiringEnabled(false);
+
+            // The callout and the blast get the screen to themselves first.
+            yield return new WaitForSecondsRealtime(regateCalloutHoldSec);
+            if (!RoundLive) { AbandonRegate(); yield break; }
+
+            // TRY AGAIN! takes the callout's spot. The word leaving is the starting gun, and the
+            // caller of the beat hands firing back on that same frame — the GoBeat contract.
+            if (uiManager != null) uiManager.DismissCallout();
+            if (Overlay != null) yield return Overlay.RetryBeat(regateRetrySec);
+            if (!RoundLive) { AbandonRegate(); yield break; }
+
+            if (laser != null) laser.SetFiringEnabled(true);
+            _regateCoroutine = null;
+        }
+
+        /// <summary>
+        /// Drops a re-gate in progress — the phase ended under it, so firing is not coming back.
+        /// Takes the word down and tells the held trial clock to stop waiting. Safe to call when
+        /// no re-gate is running; ExperimentDirector calls it at every phase end.
+        /// </summary>
+        public void AbandonRegate()
+        {
+            if (_regateCoroutine != null)
+            {
+                StopCoroutine(_regateCoroutine);
+                _regateCoroutine = null;
+            }
+            Overlay?.HideGate();
+            if (shockwave != null) shockwave.AbandonRegate();
+        }
+
+        // Steady, visible, and back under the pointer's control. The one exit from the reset gate
+        // for the UFO, whichever way the sequence ended — which is why the blink is stopped here
+        // too: it runs as its own coroutine, and a gate that ended any way but through
+        // StartingGun would otherwise leave it toggling the UFO forever.
+        void RestoreUfo()
+        {
+            StopBlink();
+            if (ufo == null) return;
+            ufo.SetHidden(false);
+            ufo.FreezeMovement = false;
+        }
+
+        void StopBlink()
+        {
+            if (_blinkCoroutine == null) return;
+            StopCoroutine(_blinkCoroutine);
+            _blinkCoroutine = null;
+        }
+
+        // Square-wave blink at ufoFlashHz, starting visible, until stopped. Unscaled time: a
+        // stutter is a main-thread block, and a blink timed off the scaled clock would carry it.
+        IEnumerator BlinkUfo()
+        {
+            float elapsed = 0f;
+            while (true)
+            {
+                bool visible = ((int)(elapsed * ufoFlashHz * 2f) & 1) == 0;
+                ufo.SetHidden(!visible);
+                yield return null;
+                elapsed += Time.unscaledDeltaTime;
+            }
         }
 
         /// <summary>
@@ -250,6 +424,10 @@ namespace JndUfo
             if (rig == null) yield break;
 
             if (perturbation != null) perturbation.SpikesSuppressed = true;
+
+            // Restored to what it was rather than to false: the reset gate freezes the UFO for
+            // longer than the pan, and this must not thaw it early.
+            bool wasFrozen = ufo != null && ufo.FreezeMovement;
             if (ufo != null) ufo.FreezeMovement = true;
 
             try
@@ -274,7 +452,7 @@ namespace JndUfo
             }
             finally
             {
-                if (ufo != null) ufo.FreezeMovement = false;
+                if (ufo != null) ufo.FreezeMovement = wasFrozen;
                 if (perturbation != null)
                 {
                     perturbation.ResetSideTracking();
@@ -319,74 +497,63 @@ namespace JndUfo
 
         void HandleShotFired(Vector3 hitPoint, bool hitGround)
         {
-            // Classified before anything else touches the trial: ClassifyPlayerFire closes the
-            // shockwave clock, and letting the timeout also fire for a trial the participant
-            // already answered would score the same trial twice.
-            ShockwaveOutcome outcome = IsShockwaveBlock && shockwave != null
+            // Classified before anything else touches the round: a verdict that ends the round
+            // closes the clock, and letting the timeout also fire for a round the participant
+            // already answered would score the same round twice.
+            TrialVerdict verdict = shockwave != null
                 ? shockwave.ClassifyPlayerFire()
-                : ShockwaveOutcome.None;
+                : TrialVerdict.Of(ShockwaveOutcome.None, endsRound: true, counted: true);
 
-            ResolveTrial(hitPoint, outcome);
+            ResolveTrial(hitPoint, verdict);
         }
 
         /// <summary>
-        /// Ends an shockwave trial that ran out of time. Called by
-        /// <see cref="ShockwaveTrialRunner"/> when the response window closes unanswered — the
-        /// one path where a trial completes with no shot at all, so it cannot arrive through
-        /// LaserFirer's event like every other outcome.
+        /// Ends a round that ran out with no shot. Called by <see cref="ShockwaveTrialRunner"/>
+        /// when a shockwave round's last window closes unanswered, or a laser round crosses the
+        /// tower one time too many or runs out its clock — the paths where a round completes with
+        /// no shot at all, so they cannot arrive through LaserFirer's event like every other
+        /// outcome.
         /// </summary>
-        public void ResolveShockwaveTimeout()
+        public void ResolveWithoutShot(ShockwaveOutcome outcome)
         {
             // No shot was fired, so there is no landing point. The UFO's own position stands in:
             // it is where the cannon *would* have gone off, which is what the fog shockwave needs a
             // centre for, and the shot log records the absence explicitly (playerFired = false)
             // rather than leaving this position to be mistaken for a landed shot.
             Vector3 where = ufo != null ? ufo.transform.position : Vector3.zero;
-            ResolveTrial(where, ShockwaveOutcome.Timeout);
+            ResolveTrial(where, TrialVerdict.Of(outcome, endsRound: true, counted: true));
         }
 
         /// <summary>
-        /// The single place a trial ends, whichever weapon and whichever outcome produced it:
-        /// score it, tell QUEST+, show the result, log it, and start the reveal.
+        /// The single place a response is scored, whichever weapon and whichever outcome
+        /// produced it: score it, tell QUEST+, show the result, log it — and, if the verdict
+        /// closes the round, start the reveal. A verdict that keeps the round open (a shockwave
+        /// press that was too early or too late) does everything but the reveal: the participant
+        /// stays in play and the stutter is presented again.
         ///
         /// The two weapons differ only in what decides <c>isHit</c>. The laser decides it by aim —
         /// landing a shot on the fog-hidden tower means the participant tracked it through the
         /// stutter. Shockwave decides it by timing — answering inside the response window means
         /// they saw the stutter arrive. Everything downstream of that one decision is shared.
         /// </summary>
-        void ResolveTrial(Vector3 hitPoint, ShockwaveOutcome outcome)
+        void ResolveTrial(Vector3 hitPoint, TrialVerdict verdict)
         {
             if (scoreManager == null)
                 scoreManager = FindAnyObjectByType<ScoreManager>();
 
-            bool isShockwave = outcome != ShockwaveOutcome.None;
-            bool playerFired  = outcome != ShockwaveOutcome.Timeout;
+            ShockwaveOutcome outcome = verdict.outcome;
+            bool isShockwave = IsShockwaveBlock;
+            bool playerFired = verdict.PlayerFired;
+            bool byAim       = !isShockwave && playerFired;   // an actual laser shot
 
-            if (laser != null) laser.SetFiringEnabled(false);
+            if (verdict.endsRound && laser != null) laser.SetFiringEnabled(false);
 
             Vector3 towerBase = towerManager != null ? towerManager.MainTowerPosition : Vector3.zero;
 
             float shotScore = 0f, total = 0f, dist = 0f;
             bool  isHit;
 
-            if (isShockwave)
-            {
-                isHit = outcome == ShockwaveOutcome.Detected;
-
-                // Recorded for the logs, never scored — see ScoreManager.ScoreOutcome. A timeout
-                // has no shot to measure at all.
-                dist = playerFired ? Mathf.Abs(hitPoint.x - towerBase.x) : float.NaN;
-
-                if (scoreManager != null)
-                {
-                    shotScore = scoreManager.ScoreOutcome(isHit, playerFired ? dist : 0f);
-                    total     = scoreManager.TotalScore;
-                }
-
-                // The blast's own shake is fired by ShockwaveCannon at detonation, so there is
-                // nothing to add here — and a timeout never detonates, so nothing shakes at all.
-            }
-            else
+            if (byAim)
             {
                 if (towerManager != null && towerManager.rig != null)
                     towerManager.rig.Shake(hitPoint);
@@ -405,44 +572,67 @@ namespace JndUfo
                 // that maps onto its psychometric model.
                 isHit = scoreManager != null && shotScore >= scoreManager.HitPoints;
             }
+            else
+            {
+                isHit = outcome == ShockwaveOutcome.Detected;
+
+                // Recorded for the logs, never scored — see ScoreManager.ScoreOutcome. A round
+                // that ended without a shot has nothing to measure at all.
+                dist = playerFired ? Mathf.Abs(hitPoint.x - towerBase.x) : float.NaN;
+
+                if (scoreManager != null)
+                {
+                    shotScore = scoreManager.ScoreOutcome(isHit, playerFired ? dist : 0f);
+                    total     = scoreManager.TotalScore;
+                }
+
+                // The blast's own shake is fired by ShockwaveCannon at detonation, so there is
+                // nothing to add here — and a round with no shot never detonates, so nothing
+                // shakes at all.
+            }
 
             if (uiManager != null)
             {
-                if (isShockwave) uiManager.DisplayShockwaveResult(outcome, total);
-                else              uiManager.DisplayShotResult(shotScore, total, dist, hitPoint, towerBase);
+                if (byAim) uiManager.DisplayShotResult(shotScore, total, dist, hitPoint, towerBase);
+                else       uiManager.DisplayOutcomeCallout(outcome, total);
             }
 
-            // An anticipatory press may or may not be evidence about the threshold — see
-            // EarlyFirePolicy. Everything else always is.
-            bool counted = !isShockwave || shockwave == null ||
-                            shockwave.CountsTowardStaircase(outcome);
+            bool counted = verdict.countedByStaircase;
             if (perturbation != null) perturbation.ReportShotResult(isHit, counted);
 
             if (AudioManager.Instance != null)
             {
                 // The shockwave barrage has already played from the cannon; only the hit sting is
                 // left to add. The miss sting rides with the callout in UIManager either way.
-                if (isShockwave) { if (isHit) AudioManager.Instance.PlayHit(); }
-                else              AudioManager.Instance.PlayShotOutcome(isHit);
+                if (byAim) AudioManager.Instance.PlayShotOutcome(isHit);
+                else if (isHit) AudioManager.Instance.PlayHit();
             }
 
-            Debug.Log($"[GameManager] Trial resolved. outcome={outcome} hitPoint={hitPoint} " +
-                      $"score={shotScore} total={total} distance={dist} isHit={isHit} counted={counted}");
+            Debug.Log($"[GameManager] Response resolved. outcome={outcome} hitPoint={hitPoint} " +
+                      $"score={shotScore} total={total} distance={dist} isHit={isHit} " +
+                      $"counted={counted} endsRound={verdict.endsRound}");
 
             // Logged after ReportShotResult so the QUEST+ figures in the shot row are the
             // posterior *including* this response, not the one it was chosen from.
-            if (ExperimentDirector.Instance != null)
+            if (ExperimentDirector.Instance != null && shockwave != null)
+                ExperimentDirector.Instance.RecordShot(hitPoint, towerBase, isHit, total,
+                                                       shockwave.Snapshot(verdict));
+
+            // After both of the above: the bar reads the posterior this response just moved, and
+            // the practice count the director just advanced.
+            if (uiManager != null) uiManager.RefreshProgress();
+
+            if (!verdict.endsRound)
             {
-                TrialResolution trial = isShockwave && shockwave != null
-                    ? shockwave.Snapshot(outcome, counted)
-                    : TrialResolution.Laser(Time.realtimeSinceStartup);
-                ExperimentDirector.Instance.RecordShot(hitPoint, towerBase, isHit, total, trial);
+                if (verdict.regate) StartRegate();
+                return;
             }
 
             if (towerManager != null)
             {
+                if (_regateCoroutine != null) AbandonRegate();
                 if (_revealCoroutine != null) StopCoroutine(_revealCoroutine);
-                _revealCoroutine = StartCoroutine(RevealSequence(hitPoint, showHitMarker: !isShockwave));
+                _revealCoroutine = StartCoroutine(RevealSequence(hitPoint, showHitMarker: byAim));
             }
         }
     }

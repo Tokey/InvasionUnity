@@ -114,6 +114,11 @@ namespace JndUfo
         public int   Streak       { get; private set; } // consecutive hits, cosmetic only
         public int   BestStreak   { get; private set; }
 
+        /// <summary>SD of the θ marginal (ms) before any response — the uniform prior's. The
+        /// precision stop rule is a journey from here to stopPosteriorSD, which is what the HUD's
+        /// progress bar measures (see RoundProgress).</summary>
+        public float PriorThresholdSD { get; }
+
         public bool IsFinished =>
             TrialCount >= Config.maxTrials ||
             (Config.stopPosteriorSD > 0f && TrialCount >= Config.minTrials &&
@@ -156,7 +161,8 @@ namespace JndUfo
                 }
             }
 
-            CurrentValue = SelectNextStimulus();
+            PriorThresholdSD = PosteriorThresholdSD();
+            CurrentValue     = SelectNextStimulus();
         }
 
         int ParamIndex(int t, int b, int l) => (t * _nSlope + b) * _nLapse + l;

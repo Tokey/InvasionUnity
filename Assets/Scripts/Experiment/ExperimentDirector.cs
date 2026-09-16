@@ -78,7 +78,10 @@ namespace JndUfo
                  "'now' is the lesson. The contrast with the laser wording is deliberate.")]
         public string shockwaveHintText = "STUTTER — FIRE NOW";
 
-        [Tooltip("Seconds the hint holds before fading.")]
+        [Tooltip("Floor on how long the alert stays readable after the round ENDS on it — a " +
+                 "participant who fires on the stutter frame still gets to read what they " +
+                 "answered. It is not a hold: while the round is live the alert stays up until " +
+                 "the shot (laser) or the window closing (shockwave).")]
         [Min(0.1f)] public float practiceHintSec = 1.1f;
 
         [Header("References  (auto-found; drag-override if needed)")]
@@ -105,6 +108,20 @@ namespace JndUfo
         public bool RoundActive => SessionActive;
 
         /// <summary>
+        /// How far through the practice ladder the participant is, 0–1, for the HUD's progress
+        /// bar: rounds completed over rounds configured. 0 when the block has no practice. The
+        /// main run's progress comes from the staircase instead — see <see cref="RoundProgress"/>.
+        /// </summary>
+        public float PracticeProgress
+        {
+            get
+            {
+                int trials = Config != null ? Config.PracticeTrials : 0;
+                return trials > 0 ? Mathf.Clamp01(_roundNumber / (float)trials) : 0f;
+            }
+        }
+
+        /// <summary>
         /// The trial clock, resolved lazily. GameManager creates it in its own Awake, and Unity
         /// gives no ordering guarantee between two Awakes, so the reference caught in
         /// ResolveReferences can legitimately still be null.
@@ -125,6 +142,14 @@ namespace JndUfo
 
         DateTime _startedAt;
         float    _startRealtime;
+        // The origin the trial clock's Time.realtimeSinceStartup stamps are rebased against.
+        // Normally _startRealtime itself: the two clocks share an origin (verified on every
+        // session logged so far — a press sits 5–30 ms after its frame row, which is its place
+        // inside the frame), so rebasing both against the one frame-clock stamp puts a trial's
+        // instants exactly on the frame log's axis. BeginPhase checks that assumption each phase
+        // and, if the clocks ever disagree by more than a frame could, falls back to a realtime
+        // stamp of its own — off the frame axis by a fraction of a frame, but never by the gap.
+        float    _trialClockOrigin;
         int      _frameIndex;
 
         // Set by RecordShot (called from Update, via LaserFirer -> GameManager) and consumed by
@@ -132,7 +157,17 @@ namespace JndUfo
         bool  _shotFiredThisFrame;
         float _shotHitXThisFrame;
 
+        // Rounds COMPLETED so far in this phase. A round is one starting gun to one reveal, and
+        // a shockwave round can log several responses before the one that closes it, so this
+        // advances when a response ends the round rather than on every response.
         int      _roundNumber;
+        // The round the frame log labels the current frame with — 1-based, the same number the
+        // shot log gives that round. Trails _roundNumber by a frame: the response that closes a
+        // round advances _roundNumber from Update, and its own frame row (written in LateUpdate)
+        // still belongs to the round it closed, so this only moves once that row is out.
+        int      _frameRound;
+        // Responses logged so far in the round in progress; the shot row's attemptInRound.
+        int      _attemptsThisRound;
         // Main-phase rounds run continuously across blocks — block 2 picks up where block 1
         // stopped, so roundNumber is a single sequence over the whole session. Practice is
         // numbered separately from 1, since it is a different thing and tagged as such.
@@ -145,6 +180,12 @@ namespace JndUfo
 
         // Non-null once the run has a reason to stop; see the wait loop in RunSession.
         string   _endReason;
+
+        // True from the main phase opening until its session row is written. If the app goes
+        // away in between, the row is written on the way out with endReason "abandoned" — the
+        // shot and frame rows were always flushed on quit, but without a summary row the block
+        // was invisible to anything that starts from the session log.
+        bool     _blockSummaryPending;
 
         // ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -211,9 +252,7 @@ namespace JndUfo
 
             if (block.IsShockwave)
             {
-                ok = ShockwaveGuessRate.TryCompute(block.swSpikeDelayMinSec, block.swSpikeDelayMaxSec,
-                                                     block.swWindowMinSec, block.swWindowMaxSec,
-                                                     out gamma, out _, out report);
+                ok = ShockwaveGuessRate.TryCompute(block, out gamma, out _, out report);
             }
             else
             {
@@ -244,10 +283,24 @@ namespace JndUfo
         void OnDestroy()
         {
             if (Instance == this) Instance = null;
-            _logger?.Dispose();
+            CloseLogs();
         }
 
-        void OnApplicationQuit() => _logger?.Dispose();
+        void OnApplicationQuit() => CloseLogs();
+
+        // Everything still in memory goes to disk: the block in progress gets its summary row,
+        // then the buffered shot and frame rows are flushed. Safe to call more than once — the
+        // summary is written at most once and a flush of nothing is a no-op.
+        void CloseLogs()
+        {
+            if (_logger == null) return;
+            if (_blockSummaryPending && _stats != null)
+            {
+                _blockSummaryPending = false;
+                _logger.WriteSessionLog(_startedAt, DateTime.Now, _stats, "abandoned", perturbation);
+            }
+            _logger.Dispose();
+        }
 
         void ResolveReferences()
         {
@@ -302,7 +355,7 @@ namespace JndUfo
         /// </summary>
         string TaskInstruction() => Config != null && Config.IsShockwave
             ? "Watch for the game to stutter, then fire IMMEDIATELY.\n" +
-              "Firing before the stutter fails the round, and so does waiting too long."
+              "Fire too early or too late and the stutter comes again — but you'll lose points."
             : "Shoot the hidden tower.";
 
         string StartPrompt() =>
@@ -327,7 +380,11 @@ namespace JndUfo
                 laser.SetCooldown(Config.fireCooldown);
                 laser.SetFiringEnabled(false);
             }
-            if (gameManager != null) gameManager.hitDisplayDuration = Config.revealHoldSec;
+            if (gameManager != null)
+            {
+                gameManager.hitDisplayDuration = Config.revealHoldSec;
+                gameManager.readyBeatDuration  = Config.readyBeatSec;
+            }
             if (towerManager != null)
             {
                 towerManager.MoveTowerToRandomPosition();
@@ -345,6 +402,7 @@ namespace JndUfo
                 perturbation?.SetPractice(true, Config.practiceStuttersMs[0]);
 
                 yield return WaitForStartKey($"PRACTICE — {weaponLabel}", StartPrompt());
+                yield return PhaseStartingGun();
 
                 BeginPhase(isPractice: true);
 
@@ -370,6 +428,9 @@ namespace JndUfo
 
                 perturbation?.SetPractice(false, 0f);
                 if (scoreManager != null) scoreManager.ResetScore();
+                // The bar filled on the last practice round; empty it now, under the main-run
+                // prompt, rather than let it sit full until the first main shot.
+                RefreshProgressBar();
             }
 
             // ── Main run ─────────────────────────────────────────────────────
@@ -377,9 +438,11 @@ namespace JndUfo
             _stats = new SessionStats();   // practice performance is not part of the result
 
             yield return WaitForStartKey(blockLabel, StartPrompt());
+            yield return PhaseStartingGun();
 
             _startedAt = DateTime.Now;
             BeginPhase(isPractice: false);
+            _blockSummaryPending = true;
 
             float timeCap = ResolveTimeCap();
 
@@ -402,7 +465,9 @@ namespace JndUfo
             yield return EndPhase(isPractice: false);
 
             // Written per block, before the next one starts — so an abandoned session still
-            // leaves every completed block's result on disk.
+            // leaves every completed block's result on disk (and the block being abandoned gets
+            // its own row from CloseLogs).
+            _blockSummaryPending = false;
             _logger.WriteSessionLog(_startedAt, DateTime.Now, _stats, _endReason, perturbation);
             _logger.FlushBuffers();
 
@@ -414,8 +479,10 @@ namespace JndUfo
                       $"complete ({_endReason}) — JND estimate {jnd:0.0} ms. " +
                       (Config.IsShockwave
                           ? $"{_stats.ShockwaveDetections} detected / {_stats.ShockwaveEarly} early / " +
-                            $"{_stats.ShockwaveTimeouts} timed out, mean RT {_stats.AvgReactionSec:0.000}s."
-                          : $"{_stats.ShotsHit}/{_stats.ShotsFired} hit."));
+                            $"{_stats.ShockwaveLate} late / {_stats.ShockwaveTimeouts} timed out, " +
+                            $"mean RT {_stats.AvgReactionSec:0.000}s."
+                          : $"{_stats.ShotsHit}/{_stats.ShotsFired} hit, " +
+                            $"{_stats.ShockwaveTimeouts} timed out."));
         }
 
         /// <summary>
@@ -437,6 +504,17 @@ namespace JndUfo
             yield return null;
         }
 
+        /// <summary>
+        /// GO! before a phase's first round, so it starts the way every later round does. Without
+        /// it the first round opened silently on the frame after the prompt — the participant
+        /// pressed SPACE and the stutter timer was already running with nothing to mark it.
+        /// Runs before BeginPhase, so the beat is outside the phase clock and its frame log.
+        /// </summary>
+        IEnumerator PhaseStartingGun()
+        {
+            if (overlay != null) yield return overlay.GoBeat(Config.readyBeatSec);
+        }
+
         // Per-phase frame index and clock, both restarting at zero — the phase column tells the
         // two apart. Round numbers are the exception: main rounds continue across blocks so the
         // session reads as one sequence, while practice restarts at 1.
@@ -444,7 +522,10 @@ namespace JndUfo
         {
             _frameIndex           = 0;
             _roundNumber          = isPractice ? 0 : _mainRoundsCompleted;
+            _frameRound           = _roundNumber + 1;
+            _attemptsThisRound    = 0;
             _lastShotTime         = 0f;
+            _shotFiredThisFrame   = false;   // nothing from a previous phase may stamp frame 0
             // The live counter, not zero. PerturbationController.SpikeCount is reset once per
             // BLOCK, but a block has two phases — so at the top of the main phase it still holds
             // everything practice delivered, and baselining at zero would charge the first main
@@ -453,19 +534,57 @@ namespace JndUfo
             _hasPrevUfoPos        = false;
             _startRealtime        = Time.unscaledTime;
 
+            // See _trialClockOrigin. Within a frame the two clocks can only differ by the time
+            // elapsed since the frame started, so anything more is a genuine origin mismatch.
+            float rss  = Time.realtimeSinceStartup;
+            float skew = rss - _startRealtime;
+            if (skew >= 0f && skew < 0.25f)
+            {
+                _trialClockOrigin = _startRealtime;
+            }
+            else
+            {
+                _trialClockOrigin = rss;
+                Debug.LogWarning($"[ExperimentDirector] realtimeSinceStartup and unscaledTime differ by " +
+                                 $"{skew:0.###}s — trial timings (trialStartSec/spikeAtSec/firedAtSec/" +
+                                 "stutterAtSec) are rebased on their own stamp and may sit up to one " +
+                                 "frame off the frame log's timeSinceStartSec.");
+            }
+
             // Both logs time themselves from here, so the wall clock has to be captured at the
             // same instant the relative clock resets.
             if (_logger != null) _logger.PhaseStartedAt = DateTime.Now;
 
             SessionActive = true;
             if (laser != null) laser.SetFiringEnabled(true);
+
+            // A fresh phase starts the bar from empty.
+            RefreshProgressBar();
+        }
+
+        void RefreshProgressBar()
+        {
+            if (gameManager != null && gameManager.uiManager != null)
+                gameManager.uiManager.RefreshProgress();
         }
 
         // Stops the phase and lets any shot fired on the buzzer finish its reveal.
         IEnumerator EndPhase(bool isPractice)
         {
-            SessionActive = false;
+            // Firing goes first, and the phase stays open for the rest of this frame. The response
+            // that ended the phase was recorded from this frame's Update, and the run loop that
+            // called us resumes after the Updates of that SAME frame — so closing the phase here
+            // would skip the LateUpdate that writes the response's frame row: the frame log would
+            // lose the shot's frame, and _shotFiredThisFrame would survive to stamp a phantom
+            // shot onto the next phase's frame 0. Seen in session 52 before this wait was added.
             if (laser != null) laser.SetFiringEnabled(false);
+            yield return null;
+
+            SessionActive = false;
+
+            // A TOO LATE re-gate has no reveal to finish and no firing to come back to: drop it
+            // now rather than leave TRY AGAIN! up over the next prompt.
+            if (gameManager != null) gameManager.AbandonRegate();
 
             // Carry the main-phase count into the next block.
             if (!isPractice) _mainRoundsCompleted = _roundNumber;
@@ -475,6 +594,14 @@ namespace JndUfo
                    Time.unscaledTime - waitStart < maxRevealWaitSec)
                 yield return null;
         }
+
+        /// <summary>
+        /// Writes everything buffered so far to disk. Called by GameManager from under the
+        /// between-round veil, where a write's cost cannot be mistaken for a stimulus — see the
+        /// "SAVING…" step in its reveal sequence. Rows are labelled with the phase in progress,
+        /// which is the phase that produced them.
+        /// </summary>
+        public void FlushLogs() => _logger?.FlushBuffers();
 
         // A run with neither a staircase nor a duration would never end; fall back rather than
         // hang, and say so loudly since it means the config is malformed.
@@ -568,7 +695,7 @@ namespace JndUfo
 
             var t = new TickSample
             {
-                roundNumber       = _roundNumber,
+                roundNumber       = _frameRound,
                 frameIndex        = _frameIndex++,
                 timeSinceStartSec = Time.unscaledTime - _startRealtime,
                 unscaledDeltaMs   = Time.unscaledDeltaTime * 1000f,
@@ -630,17 +757,28 @@ namespace JndUfo
             _stats.AddTick(t);
             _logger.QueueTick(t);
 
+            // Only now, with this frame's row out, may the frame label follow a round that closed
+            // during the frame — see _frameRound.
+            _frameRound = _roundNumber + 1;
+
             DrivePracticeHint(t.spikeFired);
         }
 
         /// <summary>
-        /// Runs the practice prompt: a standing "what to look for" line while the trial is live,
+        /// Runs the practice prompt: a standing "what to look for" line while the round is live,
         /// slammed into the alert state the instant a stutter is delivered.
         ///
         /// Gated on PracticeMode, which is the same flag that stops responses reaching the
         /// posterior — so the coaching and the "this does not count" rule can never come apart. In
         /// a main round any of this would hand the participant the stimulus they are being tested
         /// on, which is why it is one gate rather than two.
+        ///
+        /// The alert's lifetime differs per weapon, because what it stands for does. On the laser
+        /// it says "fire here" and there is no deadline, so it holds until the shot. On shockwave
+        /// it says "fire NOW" and the window is half a second: once the window closes it is an
+        /// instruction to fail, so it is released and the standing prompt returns — until the next
+        /// presentation flashes it again. That rhythm, alert / prompt / alert, is also the closest
+        /// thing practice has to teaching how short the window is.
         /// </summary>
         void DrivePracticeHint(bool spikeFired)
         {
@@ -652,11 +790,11 @@ namespace JndUfo
                 return;
             }
 
+            bool isShockwave = Config != null && Config.IsShockwave;
+
             if (spikeFired)
             {
-                overlay.FlashHint(
-                    Config != null && Config.IsShockwave ? shockwaveHintText : laserHintText,
-                    practiceHintSec);
+                overlay.FlashHint(isShockwave ? shockwaveHintText : laserHintText, practiceHintSec);
                 return;
             }
 
@@ -665,20 +803,31 @@ namespace JndUfo
             // participant just answered still gets to finish.
             if (laser != null && !laser.FiringEnabled) { overlay.HideIdleHint(); return; }
 
+            // The spike frame itself is caught above; from the next frame on, the runner says
+            // whether the window is open. Not open with the round still live means it closed —
+            // or, before the first stutter, that the alert has nothing to stand for yet, where the
+            // release is a no-op anyway.
+            if (isShockwave && Shockwave != null && !Shockwave.WindowOpen)
+                overlay.ReleaseAlertHint();
+
             overlay.ShowIdleHint(idleHintText);
         }
 
         // ── Trial intake (called by GameManager) ─────────────────────────────
 
         /// <summary>
-        /// Records one trial. Called from GameManager once the score is computed and the staircase
-        /// has been told the outcome.
+        /// Records one response. Called from GameManager once the score is computed and the
+        /// staircase has been told the outcome.
         ///
-        /// <paramref name="trial"/> carries how the trial was timed. That is incidental for a laser
-        /// trial — <see cref="TrialResolution.Laser"/> fills it with NaN — and it is the whole
-        /// record for an shockwave one, where the response is <em>when</em> the participant fired
-        /// rather than where. It is a required argument rather than an optional extra precisely so
-        /// a caller cannot quietly log an shockwave trial with its response variable missing.
+        /// <paramref name="trial"/> carries how the response was timed. That is incidental for a
+        /// laser shot — most of it is NaN — and it is the whole record for a shockwave one, where
+        /// the response is <em>when</em> the participant fired rather than where. It is a required
+        /// argument rather than an optional extra precisely so a caller cannot quietly log a
+        /// shockwave response with its response variable missing.
+        ///
+        /// One row per response, not per round: a shockwave round that took an early press and a
+        /// late press before its detection logs three rows sharing a roundNumber, told apart by
+        /// attemptInRound, and only the last has roundEnded set.
         /// </summary>
         public void RecordShot(Vector3 hitPoint, Vector3 towerBase, bool isHit, float totalScore,
                                 in TrialResolution trial)
@@ -689,10 +838,17 @@ namespace JndUfo
             IJndStaircase sc = perturbation != null ? perturbation.ActiveStaircase : null;
             int spikes = perturbation != null ? perturbation.SpikeCount : 0;
 
-            // Drains the buffer, so this must happen exactly once per shot.
+            // Drains the buffer, so this must happen exactly once per response.
             var burst = perturbation != null
-                ? perturbation.TakeStutterBurst()
+                ? perturbation.TakeStutterBurst(_trialClockOrigin)
                 : default(PerturbationController.StutterBurst);
+
+            // A press answers the stutter only if it came after one and before the next — a
+            // detection or a late press. An early press has a spikeAt only because a stutter ran
+            // earlier in the round (before a TRY AGAIN!), and "time since a stutter it was not
+            // answering" is not a reaction time.
+            bool answersStutter = trial.outcome == ShockwaveOutcome.Detected ||
+                                  trial.outcome == ShockwaveOutcome.Late;
 
             // Picked up by this frame's LateUpdate row.
             _shotFiredThisFrame = true;
@@ -700,7 +856,10 @@ namespace JndUfo
 
             var s = new ShotSample
             {
-                roundNumber          = ++_roundNumber,
+                roundNumber          = _roundNumber + 1,
+                attemptInRound       = ++_attemptsThisRound,
+                roundEnded           = trial.roundEnded,
+                spikeIndexInRound    = trial.spikeIndexInRound,
                 timeSinceStartSec    = now,
                 timeSinceLastShotSec = now - _lastShotTime,
 
@@ -708,8 +867,10 @@ namespace JndUfo
                 // already advanced to the next trial's stimulus.
                 stimulusMs          = perturbation != null ? perturbation.PresentedStimulusMs : 0f,
                 spikesSinceLastShot = spikes - _spikeCountAtLastShot,
+                swallowedPresses    = trial.swallowedPresses,
 
                 stuttersMs    = burst.listMs,
+                stutterAtSec  = burst.listAtSec,
                 stutterMeanMs = burst.meanMs,
                 stutterSdMs   = burst.sdMs,
                 stutterMinMs  = burst.minMs,
@@ -733,7 +894,7 @@ namespace JndUfo
                 trialStartSec      = ToPhaseClock(trial.trialArmedAt),
                 spikeAtSec         = ToPhaseClock(trial.spikeAt),
                 firedAtSec         = ToPhaseClock(trial.firedAt),
-                reactionSec        = trial.firedAt - trial.spikeAt,   // NaN unless both happened
+                reactionSec        = answersStutter ? trial.firedAt - trial.spikeAt : float.NaN,
                 spikeDelaySec      = trial.delaySec,
                 windowSec          = trial.windowSec,
 
@@ -748,6 +909,12 @@ namespace JndUfo
             _lastShotTime         = now;
             _spikeCountAtLastShot = spikes;
 
+            if (trial.roundEnded)
+            {
+                _roundNumber++;
+                _attemptsThisRound = 0;
+            }
+
             _stats.AddShot(s);
             _logger.QueueShot(s);
 
@@ -761,17 +928,23 @@ namespace JndUfo
         {
             ShockwaveOutcome.Detected => "detected",
             ShockwaveOutcome.Early    => "early",
+            ShockwaveOutcome.Late     => "late",
             ShockwaveOutcome.Timeout  => "timeout",
+            ShockwaveOutcome.Expired  => "expired",
             _                          => "shot",
         };
 
         /// <summary>
-        /// Rebases a wall-clock instant onto the phase clock the rest of the logs use, so a trial's
-        /// timings sit in the same units as <c>timeSinceStartSec</c> and can be read against the
-        /// frame rows directly. NaN passes straight through, which is how "this never happened"
-        /// reaches the CSV as an empty cell.
+        /// Rebases a <see cref="Time.realtimeSinceStartup"/> instant onto the phase clock the rest
+        /// of the logs use, so a trial's timings sit in the same units as <c>timeSinceStartSec</c>
+        /// and can be read against the frame rows directly. NaN passes straight through, which is
+        /// how "this never happened" reaches the CSV as an empty cell.
+        ///
+        /// The frame clock is stamped once per frame and these instants are taken mid-frame, so a
+        /// press lands a few milliseconds after its own row — that is its position inside the
+        /// frame, not an error. See <see cref="_trialClockOrigin"/>.
         /// </summary>
         float ToPhaseClock(float realtimeInstant) =>
-            float.IsNaN(realtimeInstant) ? float.NaN : realtimeInstant - _startRealtime;
+            float.IsNaN(realtimeInstant) ? float.NaN : realtimeInstant - _trialClockOrigin;
     }
 }

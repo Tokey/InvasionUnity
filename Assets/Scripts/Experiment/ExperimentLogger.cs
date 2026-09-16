@@ -9,14 +9,19 @@ namespace JndUfo
     /// <summary>
     /// Owns the session's three CSV logs and the buffering policy around them.
     ///
-    ///   Data/Logs/&lt;id&gt;/SessionLog_&lt;id&gt;.csv   ONE row: the whole run, incl. the QUEST+ result
+    ///   Data/Logs/&lt;id&gt;/SessionLog_&lt;id&gt;.csv   one row per BLOCK, incl. that block's QUEST+ result
     ///   Data/Logs/&lt;id&gt;/ShotLog_&lt;id&gt;.csv      one row per trial (one shot)
     ///   Data/Logs/&lt;id&gt;/PlayerLog_&lt;id&gt;.csv    one row per rendered frame
     ///
-    /// Two levels, matching the experiment: a session is one QUEST+ staircase run, and a trial
+    /// Two levels, matching the experiment: a block is one QUEST+ staircase run, and a trial
     /// is one stimulus-plus-shot within it. All staircase output — threshold, posterior SD,
     /// slope, trial count, stop reason — is a property of the run, so it lives in the session
     /// row; the shot rows carry the stimulus presented and where the shot landed.
+    ///
+    /// The file is named "Session" because it is the session's summary file, but each row in it
+    /// is one block: every row of ExperimentConfig.csv is an independent staircase with its own
+    /// threshold, and collapsing them into one row would throw away the between-block comparison
+    /// the study exists to make. All three files therefore append across blocks alike.
     ///
     /// Nothing is written to disk while the session is running. Samples are buffered in memory
     /// and flushed at the end. This matters specifically because the experiment measures
@@ -133,13 +138,49 @@ namespace JndUfo
         {
             string[] cfg = _config != null ? _config.SettingColumnNames() : new string[0];
 
+            // Written here with the other two, NOT in WriteSessionLog. WriteSessionLog runs once
+            // per block, so emitting the header there truncated the file on every block and left
+            // only the last block's row behind — the earlier blocks' thresholds were computed,
+            // logged to the Console, and then overwritten on disk.
+            WriteLine(_sessionPath, CsvTable.Join(Concat(new[]
+            {
+                // identity & timing
+                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "weapon",
+                "startIso", "endIso", "sessionDurationSec", "playDurationSec", "endReason",
+                // QUEST+ result
+                "jndEstimateMs", "sd", "slopeEstimate", "lapseEstimate",
+                "staircaseTrials", "lastStimulusMs",
+                // performance
+                "shotsFired", "shotsHit", "accuracy", "score",
+                "shotsPerMinute", "avgShotIntervalSec",
+                // Stutters preceding each response — the session-level summary of the shot log's
+                // spikesSinceLastShot column. Meaningful for both weapons; see SessionStats.
+                "shotsBeforeSpike", "shotsAfterSpike", "avgSpikesBeforeShot",
+                // shockwave trial outcomes (all zero on a laser block)
+                "swDetections", "swEarlyFires", "swLateFires", "swTimeouts", "swSwallowedPresses",
+                "trialsNotCounted",
+                "avgReactionSec", "sdReactionSec", "minReactionSec", "maxReactionSec",
+                // miss geometry, Unity world units on X
+                "cumMissDistX", "avgMissDistX",
+                "cumMissDistXMissesOnly", "avgMissDistXMissesOnly",
+                "medianMissDistX", "sdMissDistX", "maxMissDistX",
+                // movement
+                "totalMousePathPx", "avgMouseSpeedPxPerSec", "peakMouseSpeedPxPerSec",
+                "mouseMovementPerShot", "totalUfoPathWorld",
+                // frame timing
+                "frameCount", "avgFrameTimeMs", "p95FrameTimeMs", "p99FrameTimeMs", "maxFrameTimeMs",
+                "avgFpsNoStutter", "avgFrameTimeMsNoStutter", "stutterFramesExcluded",
+                // perturbation delivered
+                "spikesFired", "totalStutterMs",
+            }, cfg)), append: false);
+
             WriteLine(_shotPath, CsvTable.Join(Concat(new[]
             {
                 "sessionId", "blockIndex", "unityApplicationFps", "testMode", "closeRadius", "weapon",
-                "phase", "phaseStartIso", "roundNumber",
+                "phase", "phaseStartIso", "roundNumber", "attemptInRound", "roundEnded",
                 "timeSinceStartSec", "timeSinceLastShotSec",
-                "stimulusMs", "spikesSinceLastShot",
-                "stuttersMs", "stutterMeanMs", "stutterSdMs", "stutterMinMs", "stutterMaxMs",
+                "stimulusMs", "spikesSinceLastShot", "spikeIndexInRound", "swallowedPresses",
+                "stuttersMs", "stutterAtSec", "stutterMeanMs", "stutterSdMs", "stutterMinMs", "stutterMaxMs",
                 "isHit", "totalScore",
                 "outcome", "playerFired", "countedByStaircase",
                 "trialStartSec", "spikeAtSec", "firedAtSec", "reactionSec",
@@ -210,8 +251,10 @@ namespace JndUfo
         // ── Session summary ──────────────────────────────────────────────────
 
         /// <summary>
-        /// Flushes the buffered trial and frame rows, then writes the one-row session log with
-        /// the QUEST+ threshold as the headline. Called once when the run ends.
+        /// Flushes the buffered trial and frame rows, then APPENDS one summary row for the block
+        /// that just ended, with that block's QUEST+ threshold as the headline. Called once per
+        /// block, so a three-block session leaves three rows under the one header the constructor
+        /// wrote.
         /// </summary>
         public void WriteSessionLog(DateTime startedAt, DateTime endedAt, SessionStats stats,
                                      string endReason, PerturbationController perturbation)
@@ -219,41 +262,8 @@ namespace JndUfo
             FlushShots();
             FlushTicks();
 
-            string[] cfg = _config != null ? _config.SettingColumnNames() : new string[0];
-
             var qp = perturbation != null ? perturbation.ActiveStaircase as QuestPlusStaircase : null;
             IJndStaircase sc = perturbation != null ? perturbation.ActiveStaircase : null;
-
-            WriteLine(_sessionPath, CsvTable.Join(Concat(new[]
-            {
-                // identity & timing
-                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "weapon",
-                "startIso", "endIso", "sessionDurationSec", "playDurationSec", "endReason",
-                // QUEST+ result
-                "jndEstimateMs", "sd", "slopeEstimate", "lapseEstimate",
-                "staircaseTrials", "lastStimulusMs",
-                // performance
-                "shotsFired", "shotsHit", "accuracy", "score",
-                "shotsPerMinute", "avgShotIntervalSec",
-                // Stutters preceding each response — the session-level summary of the shot log's
-                // spikesSinceLastShot column. Meaningful for both weapons; see SessionStats.
-                "shotsBeforeSpike", "shotsAfterSpike", "avgSpikesBeforeShot",
-                // shockwave trial outcomes (all zero on a laser block)
-                "swDetections", "swEarlyFires", "swTimeouts", "trialsNotCounted",
-                "avgReactionSec", "sdReactionSec", "minReactionSec", "maxReactionSec",
-                // miss geometry, Unity world units on X
-                "cumMissDistX", "avgMissDistX",
-                "cumMissDistXMissesOnly", "avgMissDistXMissesOnly",
-                "medianMissDistX", "sdMissDistX", "maxMissDistX",
-                // movement
-                "totalMousePathPx", "avgMouseSpeedPxPerSec", "peakMouseSpeedPxPerSec",
-                "mouseMovementPerShot", "totalUfoPathWorld",
-                // frame timing
-                "frameCount", "avgFrameTimeMs", "p95FrameTimeMs", "p99FrameTimeMs", "maxFrameTimeMs",
-                "avgFpsNoStutter", "avgFrameTimeMsNoStutter", "stutterFramesExcluded",
-                // perturbation delivered
-                "spikesFired", "totalStutterMs",
-            }, cfg)), append: false);
 
             var fields = new List<string>
             {
@@ -280,7 +290,9 @@ namespace JndUfo
                 CsvTable.F(stats.AvgSpikesBeforeShot, 3),
 
                 CsvTable.I(stats.ShockwaveDetections), CsvTable.I(stats.ShockwaveEarly),
-                CsvTable.I(stats.ShockwaveTimeouts),   CsvTable.I(stats.TrialsNotCounted),
+                CsvTable.I(stats.ShockwaveLate),
+                CsvTable.I(stats.ShockwaveTimeouts),   CsvTable.I(stats.SwallowedPresses),
+                CsvTable.I(stats.TrialsNotCounted),
                 CsvTable.F(stats.AvgReactionSec, 4), CsvTable.F(stats.SdReactionSec, 4),
                 CsvTable.F(stats.MinReactionSec, 4), CsvTable.F(stats.MaxReactionSec, 4),
 
@@ -304,7 +316,8 @@ namespace JndUfo
             fields.AddRange(_settingValues);
 
             WriteLine(_sessionPath, CsvTable.Join(fields), append: true);
-            Debug.Log($"[ExperimentLogger] Session log written ({endReason}) — {stats.ShotsFired} trials, " +
+            Debug.Log($"[ExperimentLogger] Session row appended for block {_blockIndex} ({endReason}) — " +
+                      $"{stats.ShotsFired} trials, " +
                       $"JND {(sc != null ? sc.JndEstimate() : float.NaN):0.0} ms → {_sessionPath}");
         }
 
@@ -326,9 +339,11 @@ namespace JndUfo
                         w.Cell(sessionId).Cell(blockIdx).Cell(_fpsCapCell)
                          .Cell(_testModeCell).Cell(_closeRadiusCell).Cell(_weaponCell)
                          .Cell(CurrentPhase).Cell(phaseIso).Cell(s.roundNumber)
+                         .Cell(s.attemptInRound).Cell(s.roundEnded)
                          .Cell(s.timeSinceStartSec, 4).Cell(s.timeSinceLastShotSec, 4)
-                         .Cell(s.stimulusMs, 3).Cell(s.spikesSinceLastShot)
-                         .Cell(s.stuttersMs)
+                         .Cell(s.stimulusMs, 3).Cell(s.spikesSinceLastShot).Cell(s.spikeIndexInRound)
+                         .Cell(s.swallowedPresses)
+                         .Cell(s.stuttersMs).Cell(s.stutterAtSec)
                          .Cell(s.stutterMeanMs, 3).Cell(s.stutterSdMs, 3)
                          .Cell(s.stutterMinMs, 3).Cell(s.stutterMaxMs, 3)
                          .Cell(s.isHit).Cell(s.totalScore, 2)
@@ -411,8 +426,10 @@ namespace JndUfo
 
         /// <summary>
         /// Flushes anything still buffered — called on quit so an abandoned session still leaves
-        /// its trial and frame rows on disk. The session summary is written by
-        /// <see cref="WriteSessionLog"/> only, so an abandoned run has no summary by design.
+        /// its trial and frame rows on disk. Summary rows are written by
+        /// <see cref="WriteSessionLog"/> only; ExperimentDirector calls it for the block being
+        /// abandoned (endReason "abandoned") before this, and blocks completed earlier keep
+        /// theirs, since rows are appended, not rewritten.
         /// </summary>
         public void Dispose()
         {

@@ -135,10 +135,11 @@ namespace JndUfo
                           || (Keyboard.current != null && Keyboard.current[altFireKey].wasPressedThisFrame);
             if (!wantsFire || Time.time - _lastFireTime < _cooldown) return;
 
-            // Under EarlyFirePolicy.IgnoreAndContinue an anticipatory press is swallowed whole —
-            // no blast, no score, no trial — and the trial it interrupted carries on toward its
-            // stutter. The cooldown is still spent so the press cannot simply be repeated every
-            // frame until the window happens to open.
+            // An anticipatory press can be swallowed whole — no blast, no score, no trial — with
+            // the trial it interrupted carrying on toward its stutter: always under
+            // EarlyFirePolicy.IgnoreAndContinue, and for a second or so after any TOO EARLY press
+            // (the runner's early lockout). The cooldown is still spent so the press cannot
+            // simply be repeated every frame until the window happens to open.
             if (ShockwaveTrialRunner.Instance != null &&
                 ShockwaveTrialRunner.Instance.ShouldSwallowFire())
             {
