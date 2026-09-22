@@ -138,6 +138,8 @@ public class UIManager : MonoBehaviour
 
     public Color tallyHitColor  = new(0.30f, 1f, 0.45f, 1f);
     public Color tallyMissColor = new(1f, 0.32f, 0.32f, 1f);
+    public Color tallyEarlyColor = new(0.65f, 0.3f, 1f, 1f);
+    public Color tallyLateColor  = new(1f, 0.68f, 0.2f, 1f);
     [Tooltip("The empty ring. Bright enough to be found against the sky, dim enough not to " +
              "compete with the filled pips beside it.")]
     public Color tallyEmptyColor = new(1f, 1f, 1f, 0.34f);
@@ -204,7 +206,7 @@ public class UIManager : MonoBehaviour
     // window — oldest first, at most tallySlots long — and _tallyCounted is how many responses
     // the phase had produced when it was last appended to, which is how a new response is told
     // apart from a repeat refresh of the same one.
-    readonly List<bool> _tallyOutcomes = new List<bool>();
+    readonly List<ShockwaveOutcome> _tallyOutcomes = new List<ShockwaveOutcome>();
     int                 _tallyCounted;
     RectTransform[]     _tallyPips;
     Image[]             _tallyRings;
@@ -628,7 +630,7 @@ public class UIManager : MonoBehaviour
             if (total <= _tallyCounted) return;
             _tallyCounted = total;
 
-            _tallyOutcomes.Add(scoreManager.LastWasHit);
+            _tallyOutcomes.Add(scoreManager.LastOutcome);
             while (_tallyOutcomes.Count > tallySlots) _tallyOutcomes.RemoveAt(0);
 
             DrawTally();
@@ -654,9 +656,19 @@ public class UIManager : MonoBehaviour
         {
             bool filled = i < _tallyOutcomes.Count;
             _tallyRings[i].color = tallyEmptyColor;
-            _tallyFills[i].color = filled
-                ? (_tallyOutcomes[i] ? tallyHitColor : tallyMissColor)
-                : Color.clear;
+            
+            Color fillCol = Color.clear;
+            if (filled)
+            {
+                fillCol = _tallyOutcomes[i] switch
+                {
+                    ShockwaveOutcome.Detected => tallyHitColor,
+                    ShockwaveOutcome.Early    => tallyEarlyColor,
+                    ShockwaveOutcome.Late     => tallyLateColor,
+                    _                         => tallyMissColor
+                };
+            }
+            _tallyFills[i].color = fillCol;
 
             // Only the pip that is currently landing is ever off its own size; everything else is
             // put back, so a response arriving mid-animation cannot leave a pip stranded large.

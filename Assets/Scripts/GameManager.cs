@@ -582,7 +582,7 @@ namespace JndUfo
 
                 if (scoreManager != null)
                 {
-                    shotScore = scoreManager.ScoreOutcome(isHit, playerFired ? dist : 0f);
+                    shotScore = scoreManager.ScoreOutcome(outcome, playerFired ? dist : 0f);
                     total     = scoreManager.TotalScore;
                 }
 

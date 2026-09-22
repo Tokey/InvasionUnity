@@ -41,6 +41,7 @@ namespace JndUfo
         /// <summary>True for a hit, false for a miss — whichever the last scored response was.
         /// The HUD uses it to decide which half of the tally to punch.</summary>
         public bool LastWasHit { get; private set; }
+        public ShockwaveOutcome LastOutcome { get; private set; }
 
         /// <summary>(lastShotScore, totalScore, distance)</summary>
         public event Action<float, float, float> OnScored;
@@ -70,6 +71,7 @@ namespace JndUfo
             LastShotScore = pts;
             TotalScore += pts;
             ShotCount += 1;
+            LastOutcome = hit ? ShockwaveOutcome.Detected : ShockwaveOutcome.Timeout;
             Tally(hit);
             Debug.Log($"[ScoreManager] dist={dist:0.00} shot={pts:0.00} total={TotalScore:0.00} closeRadius={closeRadius:0.00} missPoints={missPoints:0.00}");
             OnScored?.Invoke(LastShotScore, TotalScore, dist);
@@ -86,17 +88,19 @@ namespace JndUfo
         /// <paramref name="distanceForLog"/> is still recorded so the shot log keeps the geometry
         /// alongside every other trial, but it never reaches the score.
         /// </summary>
-        public float ScoreOutcome(bool success, float distanceForLog)
+        public float ScoreOutcome(ShockwaveOutcome outcome, float distanceForLog)
         {
             LastShotDistance = distanceForLog;
 
+            bool success = outcome == ShockwaveOutcome.Detected;
             float pts = success ? hitPoints : missPoints;
 
             LastShotScore = pts;
             TotalScore += pts;
             ShotCount += 1;
+            LastOutcome = outcome;
             Tally(success);
-            Debug.Log($"[ScoreManager] outcome success={success} shot={pts:0.00} total={TotalScore:0.00} (distance not scored)");
+            Debug.Log($"[ScoreManager] outcome={outcome} shot={pts:0.00} total={TotalScore:0.00} (distance not scored)");
             OnScored?.Invoke(LastShotScore, TotalScore, distanceForLog);
             return pts;
         }
@@ -117,6 +121,7 @@ namespace JndUfo
             Hits = 0;
             Misses = 0;
             LastWasHit = false;
+            LastOutcome = ShockwaveOutcome.None;
             // Announced like a shot, so the HUD drops to 0 with the reset — otherwise it kept
             // showing the practice score under the main-run prompt until the first main shot.
             OnScored?.Invoke(0f, 0f, 0f);
