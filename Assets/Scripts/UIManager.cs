@@ -160,8 +160,10 @@ public class UIManager : MonoBehaviour
     public string calloutShockwaveEarlyText = "TOO EARLY!";
     [Tooltip("Fired after the window had closed. The round carries on and the stutter comes again.")]
     public string calloutShockwaveLateText = "TOO LATE!";
-    [Tooltip("The round ran out with no shot — shockwave's last window closed unanswered, or a " +
-             "laser round crossed the tower too many times or ran out its clock.")]
+    [Tooltip("The round's spike allowance was exhausted — shockwave's last window closed " +
+             "unanswered, or a laser round crossed the tower too many times.")]
+    public string calloutTimeoutText = "CHANCES MISSED!";
+    [Tooltip("The round's wall clock expired with no shot fired at all.")]
     public string calloutOutOfTimeText = "OUT OF TIME!";
     [Tooltip("Early and late are both failures, but they are failures of opposite kinds. Amber " +
              "rather than the miss red keeps them legible as 'wrong timing' rather than 'bad aim'.")]
@@ -315,6 +317,7 @@ public class UIManager : MonoBehaviour
             ShockwaveOutcome.Detected => calloutShockwaveHitText,
             ShockwaveOutcome.Early    => calloutShockwaveEarlyText,
             ShockwaveOutcome.Late     => calloutShockwaveLateText,
+            ShockwaveOutcome.Timeout  => calloutTimeoutText,
             _                          => calloutOutOfTimeText,
         };
         ShowCallout(detected, text, detected ? calloutHitColor : calloutShockwaveFailColor);

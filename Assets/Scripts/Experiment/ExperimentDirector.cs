@@ -97,7 +97,8 @@ namespace JndUfo
         // ── Public state ─────────────────────────────────────────────────────
         /// <summary>True only while the run is live and shots should count.</summary>
         public bool SessionActive { get; private set; }
-        public int  SessionId     { get; private set; }
+        public int      SessionId { get; private set; }
+        public string   RunId     { get; private set; }
 
         /// <summary>The block currently running — one row of ExperimentConfig.csv.</summary>
         public StudyConfig Config { get; private set; }
@@ -229,7 +230,8 @@ namespace JndUfo
                 return;
             }
 
-            SessionId = SessionState.Reserve();
+            SessionId = SessionState.Peek();
+            RunId     = JndUfo.RunId.Generate();
 
             // The square is loaded against the config's row count, so a mismatch between the two
             // files is caught here rather than surfacing as a missing block mid-session.
@@ -238,9 +240,9 @@ namespace JndUfo
             BlockOrder = Square.OrderForSession(SessionId);
 
             Config  = _blocks[BlockIndexAt(0)];
-            _logger = new ExperimentLogger(SessionId, Config);
+            _logger = new ExperimentLogger(SessionId, RunId, Config);
 
-            Debug.Log($"[ExperimentDirector] Session {SessionId} — {_blocks.Count} block(s) of " +
+            Debug.Log($"[ExperimentDirector] Session {SessionId} (Run {RunId}) — {_blocks.Count} block(s) of " +
                       $"'{Config.label}' [{Config.testMode}], square row {SquareRow}/" +
                       $"{Square.RowCount}, order {LatinSquare.OrderText(BlockOrder)} " +
                       $"({DescribeOrder()})");
@@ -431,6 +433,8 @@ namespace JndUfo
                 yield return RunBlock(i);
             }
 
+            SessionState.Advance(SessionId);
+
             _logger.Dispose();
             Debug.Log($"[ExperimentDirector] Session {SessionId} complete — " +
                       $"{_blocks.Count} block(s). Logs in {_logger.Directory}");
@@ -455,8 +459,9 @@ namespace JndUfo
         /// </summary>
         string TaskInstruction() => Config != null && Config.IsShockwave
             ? "Watch for the game to stutter, then fire IMMEDIATELY.\n" +
-              "Fire too early or too late and the stutter comes again — but you'll lose points."
-            : "Shoot the hidden tower.";
+              "Firing too early or too late will count as a miss."
+            : "The game stutters when your aim crosses the hidden tower.\n" +
+              "Shoot the hidden tower to score.";
 
         string StartPrompt() =>
             $"{TaskInstruction()}\n\nPress {startKey.ToString().ToUpperInvariant()} to start";

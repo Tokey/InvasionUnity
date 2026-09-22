@@ -12,23 +12,20 @@ namespace JndUfo
     /// 1 and appear in every row of all three logs, so a folder of sessions can be concatenated
     /// without losing track of who produced what.
     ///
-    /// The ID is *reserved on session start*, not on finish: <see cref="Reserve"/> takes the
-    /// stored value, immediately writes back value+1, and returns what it took. If a session is
-    /// abandoned — crash, quit, participant walks out — the next participant still gets a fresh
-    /// ID instead of silently reusing one that already has partial logs on disk. The cost is a
-    /// gap in the ID sequence, which is the harmless failure.
+    /// The ID is *read on session start* using <see cref="Peek"/>, and the counter is only incremented 
+    /// on successful completion via <see cref="Advance"/>. If a session is abandoned — crash, quit, 
+    /// participant walks out — the next participant will reuse the same ID (preserving the Latin square row).
+    /// To prevent log collisions, a unique run ID is combined with the session ID for file paths.
     /// </summary>
     public static class SessionState
     {
         const string HeaderLine = "nextSessionId,lastUpdatedIso";
 
-        /// <summary>Takes the next session ID and advances the stored counter. Call once per run.</summary>
-        public static int Reserve()
+        /// <summary>Advances the stored counter to the next session ID. Call only on successful completion.</summary>
+        public static void Advance(int completedSessionId)
         {
-            int id = Peek();
-            Write(id + 1);
-            Debug.Log($"[SessionState] Session {id} reserved (next will be {id + 1}) — {ExperimentPaths.SessionState}");
-            return id;
+            Write(completedSessionId + 1);
+            Debug.Log($"[SessionState] Session {completedSessionId} completed. Next session will be {completedSessionId + 1} — {ExperimentPaths.SessionState}");
         }
 
         /// <summary>Reads the next session ID without consuming it. Returns 1 for a fresh install.</summary>

@@ -54,19 +54,20 @@ namespace JndUfo
         public static string SessionState => Path.Combine(Root, SessionFileName);
 
         /// <summary>
-        /// This session's own folder — <c>Data/Logs/1</c>, <c>Data/Logs/2</c>, … named for the
-        /// session ID and created on demand. One participant's run is a self-contained folder
-        /// that can be zipped or handed off as a unit.
+        /// This session's own folder — <c>Data/Logs/1_Ab21</c>, <c>Data/Logs/2_Xy9z</c>, … named for the
+        /// session ID and run ID, created on demand. One participant's run is a self-contained folder
+        /// that can be zipped or handed off as a unit. The run ID ensures abandoned sessions reusing
+        /// the same session ID do not collide.
         /// </summary>
-        public static string SessionLogDir(int sessionId)
+        public static string SessionLogDir(int sessionId, string runId)
         {
-            string dir = Path.Combine(LogsRoot, sessionId.ToString(CultureInfo.InvariantCulture));
+            string dir = Path.Combine(LogsRoot, $"{sessionId}_{runId}");
             Directory.CreateDirectory(dir);
             return dir;
         }
 
         /// <summary>
-        /// One log file inside a session folder, e.g. <c>Data/Logs/1/ShotLog_1.csv</c>. The ID
+        /// One log file inside a session folder, e.g. <c>Data/Logs/1_Ab21/ShotLog_1_Ab21.csv</c>. The ID
         /// is repeated in the filename as well as the folder so a file still identifies itself
         /// once it has been copied out into a pile of other participants' logs.
         ///
@@ -74,11 +75,11 @@ namespace JndUfo
         /// plain name is already taken — see the collision handling in ExperimentLogger — and
         /// appends <c>_2</c>, <c>_3</c>, … so an existing participant's data is never truncated.
         /// </summary>
-        public static string LogFile(string sessionDir, string prefix, int sessionId, int dedupIndex = 0)
+        public static string LogFile(string sessionDir, string prefix, int sessionId, string runId, int dedupIndex = 0)
         {
             string name = dedupIndex <= 0
-                ? $"{prefix}_{sessionId}.csv"
-                : $"{prefix}_{sessionId}_{dedupIndex + 1}.csv";
+                ? $"{prefix}_{sessionId}_{runId}.csv"
+                : $"{prefix}_{sessionId}_{runId}_{dedupIndex + 1}.csv";
             return Path.Combine(sessionDir, name);
         }
     }

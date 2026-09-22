@@ -59,6 +59,7 @@ namespace JndUfo
         public string CurrentPhase = "main";
 
         readonly int _sessionId;
+        readonly string _runId;
 
         // Per block, not readonly: each row of ExperimentConfig.csv is a separate block with its
         // own FPS cap and its own cfg_* values, and they all append to the same three files.
@@ -111,12 +112,13 @@ namespace JndUfo
         /// <param name="firstBlock">Only supplies the cfg_* column *names* for the headers —
         /// every block shares them, since they all come from one CSV. Call
         /// <see cref="BeginBlock"/> before logging anything.</param>
-        public ExperimentLogger(int sessionId, StudyConfig firstBlock)
+        public ExperimentLogger(int sessionId, string runId, StudyConfig firstBlock)
         {
             _sessionId = sessionId;
+            _runId     = runId;
             BeginBlock(firstBlock);
 
-            Directory = ExperimentPaths.SessionLogDir(sessionId);
+            Directory = ExperimentPaths.SessionLogDir(sessionId, runId);
 
             // Session IDs are reserved on start and never handed out twice, so the plain names
             // are free in normal use. They can only collide if SessionState.csv was reset or
@@ -125,9 +127,9 @@ namespace JndUfo
             int dedup = 0;
             while (dedup < 1000)
             {
-                _sessionPath = ExperimentPaths.LogFile(Directory, SessionPrefix, sessionId, dedup);
-                _shotPath    = ExperimentPaths.LogFile(Directory, ShotPrefix,    sessionId, dedup);
-                _playerPath  = ExperimentPaths.LogFile(Directory, PlayerPrefix,  sessionId, dedup);
+                _sessionPath = ExperimentPaths.LogFile(Directory, SessionPrefix, sessionId, runId, dedup);
+                _shotPath    = ExperimentPaths.LogFile(Directory, ShotPrefix,    sessionId, runId, dedup);
+                _playerPath  = ExperimentPaths.LogFile(Directory, PlayerPrefix,  sessionId, runId, dedup);
 
                 if (!File.Exists(_sessionPath) && !File.Exists(_shotPath) && !File.Exists(_playerPath))
                     break;
@@ -160,7 +162,7 @@ namespace JndUfo
             WriteLine(_sessionPath, CsvTable.Join(Concat(new[]
             {
                 // identity & timing
-                "sessionId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
+                "sessionId", "runId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
                 "unityApplicationFps", "testMode", "weapon",
                 "startIso", "endIso", "sessionDurationSec", "playDurationSec", "endReason",
                 // QUEST+ result. jndEstimateMs is the posterior MEAN of θ; the median, mode and
@@ -201,7 +203,7 @@ namespace JndUfo
 
             WriteLine(_shotPath, CsvTable.Join(Concat(new[]
             {
-                "sessionId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
+                "sessionId", "runId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
                 "unityApplicationFps", "testMode", "closeRadius", "weapon",
                 "phase", "phaseStartIso", "roundNumber", "attemptInRound", "roundEnded",
                 "timeSinceStartSec", "timeSinceLastShotSec",
@@ -218,7 +220,7 @@ namespace JndUfo
 
             WriteLine(_playerPath, CsvTable.Join(Concat(new[]
             {
-                "sessionId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
+                "sessionId", "runId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
                 "unityApplicationFps", "testMode", "closeRadius", "weapon",
                 "phase", "phaseStartIso", "roundNumber",
                 "frameIndex", "timeSinceStartSec", "unscaledDeltaMs",
@@ -307,7 +309,7 @@ namespace JndUfo
 
             var fields = new List<string>
             {
-                CsvTable.I(_sessionId), CsvTable.I(_blockIndex),
+                CsvTable.I(_sessionId), _runId, CsvTable.I(_blockIndex),
                 _blockOrdinalCell, _latinRowCell, _latinOrderCell, _weaponRunCell,
                 _fpsCapCell,
                 _config != null ? _config.testMode.ToString() : "",
@@ -385,7 +387,7 @@ namespace JndUfo
                 {
                     foreach (ShotSample s in _shots)
                     {
-                        w.Cell(sessionId).Cell(blockIdx)
+                        w.Cell(sessionId).Cell(_runId).Cell(blockIdx)
                          .Cell(_blockOrdinalCell).Cell(_latinRowCell)
                          .Cell(_latinOrderCell).Cell(_weaponRunCell)
                          .Cell(_fpsCapCell)
@@ -433,7 +435,7 @@ namespace JndUfo
                 {
                     foreach (TickSample t in _ticks)
                     {
-                        w.Cell(sessionId).Cell(blockIdx)
+                        w.Cell(sessionId).Cell(_runId).Cell(blockIdx)
                          .Cell(_blockOrdinalCell).Cell(_latinRowCell)
                          .Cell(_latinOrderCell).Cell(_weaponRunCell)
                          .Cell(_fpsCapCell)
