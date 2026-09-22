@@ -264,5 +264,27 @@ namespace JndUfo
             PlayExplosion();
             if (isHit) PlayHit();
         }
+
+        public void StopOneShots()
+        {
+            if (_sfx != null) _sfx.Stop();
+            if (_positional != null)
+            {
+                foreach (var src in _positional)
+                {
+                    if (src != null) src.Stop();
+                }
+            }
+        }
+
+        public void PauseEngine()
+        {
+            if (_engine != null && _engine.isPlaying) _engine.Pause();
+        }
+
+        public void ResumeEngine()
+        {
+            if (_engine != null && !_engine.isPlaying) _engine.UnPause();
+        }
     }
 }

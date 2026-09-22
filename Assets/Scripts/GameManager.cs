@@ -216,8 +216,21 @@ namespace JndUfo
                 ufo.SetHidden(true);
                 ufo.FreezeMovement = true;
             }
+
+            // Stop all explosions/lasers here. FlushLogs is a synchronous disk write that blocks 
+            // the main thread, causing FMOD to underrun and crackle violently if any loud sounds 
+            // are still playing. Since the veil is up anyway, cutting them off is natural.
+            if (AudioManager.Instance != null)
+            {
+                AudioManager.Instance.StopOneShots();
+                AudioManager.Instance.PauseEngine();
+            }
+
             yield return null;
             if (ExperimentDirector.Instance != null) ExperimentDirector.Instance.FlushLogs();
+            
+            if (AudioManager.Instance != null) AudioManager.Instance.ResumeEngine();
+
             if (live) Overlay?.ShowGateHold();
 
             // 7. Fog returns, skybox spins and the camera pans, all at once: one movement under

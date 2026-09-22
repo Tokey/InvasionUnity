@@ -137,9 +137,9 @@ public class UIManager : MonoBehaviour
     [Range(0.3f, 1f)] public float tallyFillScale = 0.74f;
 
     public Color tallyHitColor  = new(0.30f, 1f, 0.45f, 1f);
-    public Color tallyMissColor = new(1f, 0.32f, 0.32f, 1f);
+    public Color tallyMissColor = new(1f, 0.68f, 0.2f, 1f);
     public Color tallyEarlyColor = new(0.65f, 0.3f, 1f, 1f);
-    public Color tallyLateColor  = new(1f, 0.68f, 0.2f, 1f);
+    public Color tallyLateColor  = new(1f, 0.32f, 0.32f, 1f);
     [Tooltip("The empty ring. Bright enough to be found against the sky, dim enough not to " +
              "compete with the filled pips beside it.")]
     public Color tallyEmptyColor = new(1f, 1f, 1f, 0.34f);
@@ -311,8 +311,16 @@ public class UIManager : MonoBehaviour
         RefreshScoreText();
 
         bool detected = outcome == ShockwaveOutcome.Detected;
+
+        Color flashColor = outcome switch
+        {
+            ShockwaveOutcome.Early => tallyEarlyColor,
+            ShockwaveOutcome.Late  => tallyLateColor,
+            _                      => tallyMissColor
+        };
+
         if (detected) TriggerHitFlash();
-        else          TriggerMissFlash();
+        else          TriggerMissFlash(flashColor);
 
         string text = outcome switch
         {
@@ -322,7 +330,16 @@ public class UIManager : MonoBehaviour
             ShockwaveOutcome.Timeout  => calloutTimeoutText,
             _                          => calloutOutOfTimeText,
         };
-        ShowCallout(detected, text, detected ? calloutHitColor : calloutShockwaveFailColor);
+        
+        Color outcomeColor = outcome switch
+        {
+            ShockwaveOutcome.Detected => calloutHitColor,
+            ShockwaveOutcome.Early    => tallyEarlyColor,
+            ShockwaveOutcome.Late     => tallyLateColor,
+            _                         => tallyMissColor
+        };
+        
+        ShowCallout(detected, text, outcomeColor);
     }
 
     /// <summary>
@@ -924,13 +941,14 @@ public class UIManager : MonoBehaviour
         PulseScore(new Color(0.2f, 1f, 0.3f, 1f), positive: true);
     }
 
-    void TriggerMissFlash()
+    void TriggerMissFlash(Color? customColor = null)
     {
         if (_vignette == null) return;
         StopFlash();
-        _vignette.color = new Color(missRedColor.r, missRedColor.g, missRedColor.b, missRedAlpha);
+        Color flashCol = customColor ?? missRedColor;
+        _vignette.color = new Color(flashCol.r, flashCol.g, flashCol.b, missRedAlpha);
         _flashCoroutine = StartCoroutine(VignetteRoutine());
-        PulseScore(new Color(1f, 0.15f, 0.15f, 1f), positive: false);
+        PulseScore(customColor ?? new Color(1f, 0.15f, 0.15f, 1f), positive: false);
     }
 
     void StopFlash()
