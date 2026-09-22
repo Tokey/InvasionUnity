@@ -31,6 +31,13 @@ namespace JndUfo
     /// All three logs carry the session identity and the full cfg_* settings echo, so any one
     /// file states the conditions it was recorded under without a join back to
     /// ExperimentConfig.csv or to the session row.
+    ///
+    /// They also carry the counterbalancing, in four columns that answer different questions:
+    /// <c>blockIndex</c> is WHICH setting (its row in ExperimentConfig.csv), <c>blockOrdinal</c> is
+    /// WHEN in this session it was played, <c>latinRow</c>/<c>latinOrder</c> are the square row the
+    /// session drew and the whole sequence it produced, and <c>weaponRun</c> is whether this was
+    /// the participant's first or second block with that weapon. Order effects, carry-over and
+    /// practice-length effects are all only separable from the setting itself with these present.
     /// </summary>
     public class ExperimentLogger : IDisposable
     {
@@ -62,6 +69,14 @@ namespace JndUfo
         string      _testModeCell    = "";
         string      _closeRadiusCell = "";
         string      _weaponCell      = "";
+
+        // Counterbalancing. blockIndex says WHICH setting this is (its row in
+        // ExperimentConfig.csv); these say when the participant met it and what else they had
+        // played by then, which is the whole point of having a square.
+        string _blockOrdinalCell = "";
+        string _latinRowCell     = "";
+        string _latinOrderCell   = "";
+        string _weaponRunCell    = "";
 
         /// <summary>
         /// Wall-clock instant that <c>timeSinceStartSec</c> counts from, stamped onto every
@@ -145,17 +160,27 @@ namespace JndUfo
             WriteLine(_sessionPath, CsvTable.Join(Concat(new[]
             {
                 // identity & timing
-                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "weapon",
+                "sessionId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
+                "unityApplicationFps", "testMode", "weapon",
                 "startIso", "endIso", "sessionDurationSec", "playDurationSec", "endReason",
-                // QUEST+ result
-                "jndEstimateMs", "sd", "slopeEstimate", "lapseEstimate",
+                // QUEST+ result. jndEstimateMs is the posterior MEAN of θ; the median, mode and
+                // 95% credible interval come with it because the θ posterior is a distribution
+                // over a bounded grid and is skewed near its ends — where mean ± 2·sd is not the
+                // interval the posterior actually puts 95% in, and can fall outside the grid.
+                // priorSd is where the SD started, so how far a block got is readable without
+                // re-deriving the uniform prior from the grid columns.
+                "jndEstimateMs", "sd", "priorSd",
+                "jndMedianMs", "jndModeMs", "jndCI95LoMs", "jndCI95HiMs",
+                "slopeEstimate", "lapseEstimate",
                 "staircaseTrials", "lastStimulusMs",
                 // performance
                 "shotsFired", "shotsHit", "accuracy", "score",
                 "shotsPerMinute", "avgShotIntervalSec",
                 // Stutters preceding each response — the session-level summary of the shot log's
-                // spikesSinceLastShot column. Meaningful for both weapons; see SessionStats.
+                // spikesSinceLastShot and sinceLastSpikeSec columns. Meaningful for both weapons;
+                // see SessionStats.
                 "shotsBeforeSpike", "shotsAfterSpike", "avgSpikesBeforeShot",
+                "avgSinceLastSpikeSec", "minSinceLastSpikeSec", "maxSinceLastSpikeSec",
                 // shockwave trial outcomes (all zero on a laser block)
                 "swDetections", "swEarlyFires", "swLateFires", "swTimeouts", "swSwallowedPresses",
                 "trialsNotCounted",
@@ -176,11 +201,13 @@ namespace JndUfo
 
             WriteLine(_shotPath, CsvTable.Join(Concat(new[]
             {
-                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "closeRadius", "weapon",
+                "sessionId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
+                "unityApplicationFps", "testMode", "closeRadius", "weapon",
                 "phase", "phaseStartIso", "roundNumber", "attemptInRound", "roundEnded",
                 "timeSinceStartSec", "timeSinceLastShotSec",
                 "stimulusMs", "spikesSinceLastShot", "spikeIndexInRound", "swallowedPresses",
                 "stuttersMs", "stutterAtSec", "stutterMeanMs", "stutterSdMs", "stutterMinMs", "stutterMaxMs",
+                "lastSpikeAtSec", "sinceLastSpikeSec",
                 "isHit", "totalScore",
                 "outcome", "playerFired", "countedByStaircase",
                 "trialStartSec", "spikeAtSec", "firedAtSec", "reactionSec",
@@ -191,7 +218,8 @@ namespace JndUfo
 
             WriteLine(_playerPath, CsvTable.Join(Concat(new[]
             {
-                "sessionId", "blockIndex", "unityApplicationFps", "testMode", "closeRadius", "weapon",
+                "sessionId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "weaponRun",
+                "unityApplicationFps", "testMode", "closeRadius", "weapon",
                 "phase", "phaseStartIso", "roundNumber",
                 "frameIndex", "timeSinceStartSec", "unscaledDeltaMs",
                 "mouseX", "mouseY", "mouseDeltaX", "mouseDeltaY",
@@ -211,8 +239,20 @@ namespace JndUfo
         /// logged from here on, so all three files stay readable as one concatenated stream and
         /// any row can be traced to the block that produced it.
         /// </summary>
-        public void BeginBlock(StudyConfig block)
+        /// <param name="blockOrdinal">1-based position in THIS session's running order.</param>
+        /// <param name="latinRow">Which row of Data/LatinSquare.csv the session is on.</param>
+        /// <param name="latinOrder">That row, as "2;3;1;4" — the whole session's order, repeated
+        /// on every block so one block's rows state the sequence they sat in without a join.</param>
+        /// <param name="weaponRun">1 if this is the session's first block with this weapon, 2 for
+        /// its repeat — which is also what decided the length of its practice ladder.</param>
+        public void BeginBlock(StudyConfig block, int blockOrdinal = 0, int latinRow = 0,
+                                string latinOrder = "", int weaponRun = 0)
         {
+            _blockOrdinalCell = blockOrdinal > 0 ? CsvTable.I(blockOrdinal) : "";
+            _latinRowCell     = latinRow     > 0 ? CsvTable.I(latinRow)     : "";
+            _latinOrderCell   = latinOrder ?? "";
+            _weaponRunCell    = weaponRun    > 0 ? CsvTable.I(weaponRun)    : "";
+
             _config        = block;
             _settingValues = block != null ? block.ValuesInColumnOrder() : new string[0];
             _blockIndex    = block != null ? block.blockIndex : 0;
@@ -267,7 +307,9 @@ namespace JndUfo
 
             var fields = new List<string>
             {
-                CsvTable.I(_sessionId), CsvTable.I(_blockIndex), _fpsCapCell,
+                CsvTable.I(_sessionId), CsvTable.I(_blockIndex),
+                _blockOrdinalCell, _latinRowCell, _latinOrderCell, _weaponRunCell,
+                _fpsCapCell,
                 _config != null ? _config.testMode.ToString() : "",
                 _weaponCell,
                 startedAt.ToString("o", CsvTable.Ci), endedAt.ToString("o", CsvTable.Ci),
@@ -277,6 +319,11 @@ namespace JndUfo
 
                 CsvTable.F(sc != null ? sc.JndEstimate() : float.NaN, 3),
                 CsvTable.F(qp != null ? qp.PosteriorThresholdSD() : float.NaN, 3),
+                CsvTable.F(qp != null ? qp.PriorThresholdSD : float.NaN, 3),
+                CsvTable.F(qp != null ? qp.ThresholdQuantile(0.5f)   : float.NaN, 3),
+                CsvTable.F(qp != null ? qp.ThresholdMode()           : float.NaN, 3),
+                CsvTable.F(qp != null ? qp.ThresholdQuantile(0.025f) : float.NaN, 3),
+                CsvTable.F(qp != null ? qp.ThresholdQuantile(0.975f) : float.NaN, 3),
                 CsvTable.F(qp != null ? qp.SlopeEstimate() : float.NaN, 3),
                 CsvTable.F(qp != null ? qp.LapseEstimate() : float.NaN, 4),
                 CsvTable.I(sc != null ? sc.TrialCount : 0),
@@ -288,6 +335,8 @@ namespace JndUfo
 
                 CsvTable.I(stats.ShotsBeforeSpike), CsvTable.I(stats.ShotsAfterSpike),
                 CsvTable.F(stats.AvgSpikesBeforeShot, 3),
+                CsvTable.F(stats.AvgSinceLastSpikeSec, 4), CsvTable.F(stats.MinSinceLastSpikeSec, 4),
+                CsvTable.F(stats.MaxSinceLastSpikeSec, 4),
 
                 CsvTable.I(stats.ShockwaveDetections), CsvTable.I(stats.ShockwaveEarly),
                 CsvTable.I(stats.ShockwaveLate),
@@ -336,7 +385,10 @@ namespace JndUfo
                 {
                     foreach (ShotSample s in _shots)
                     {
-                        w.Cell(sessionId).Cell(blockIdx).Cell(_fpsCapCell)
+                        w.Cell(sessionId).Cell(blockIdx)
+                         .Cell(_blockOrdinalCell).Cell(_latinRowCell)
+                         .Cell(_latinOrderCell).Cell(_weaponRunCell)
+                         .Cell(_fpsCapCell)
                          .Cell(_testModeCell).Cell(_closeRadiusCell).Cell(_weaponCell)
                          .Cell(CurrentPhase).Cell(phaseIso).Cell(s.roundNumber)
                          .Cell(s.attemptInRound).Cell(s.roundEnded)
@@ -346,6 +398,7 @@ namespace JndUfo
                          .Cell(s.stuttersMs).Cell(s.stutterAtSec)
                          .Cell(s.stutterMeanMs, 3).Cell(s.stutterSdMs, 3)
                          .Cell(s.stutterMinMs, 3).Cell(s.stutterMaxMs, 3)
+                         .Cell(s.lastSpikeAtSec, 4).Cell(s.sinceLastSpikeSec, 4)
                          .Cell(s.isHit).Cell(s.totalScore, 2)
                          // Reaction times are the shockwave task's response variable, so they get
                          // millisecond resolution rather than the 3 decimals the rest of the row uses.
@@ -380,7 +433,10 @@ namespace JndUfo
                 {
                     foreach (TickSample t in _ticks)
                     {
-                        w.Cell(sessionId).Cell(blockIdx).Cell(_fpsCapCell)
+                        w.Cell(sessionId).Cell(blockIdx)
+                         .Cell(_blockOrdinalCell).Cell(_latinRowCell)
+                         .Cell(_latinOrderCell).Cell(_weaponRunCell)
+                         .Cell(_fpsCapCell)
                          .Cell(_testModeCell).Cell(_closeRadiusCell).Cell(_weaponCell)
                          .Cell(CurrentPhase).Cell(phaseIso).Cell(t.roundNumber)
                          .Cell(t.frameIndex).Cell(t.timeSinceStartSec, 5).Cell(t.unscaledDeltaMs, 4)

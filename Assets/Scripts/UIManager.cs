@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using JndUfo;
 using TMPro;
 using UnityEngine;
@@ -9,12 +10,15 @@ public class UIManager : MonoBehaviour
     [Header("References")]
     public ScoreManager scoreManager;
     public GameManager  gameManager;
+    [Tooltip("The scene's HUD text. It used to carry the score; it is now the anchor the hit/miss " +
+             "tally is built over, and the text component itself is switched off — see " +
+             "BuildTally. Leave it assigned: its RectTransform is what positions the tally.")]
     public TMP_Text     scoreText;
 
-    [Tooltip("The fill of the HUD's progress bar — the top-right slot the round counter used to " +
-             "occupy. Anchored to the left edge of its track; its right anchor is driven from " +
-             "0 to 1 as the phase progresses. Practice fills by rounds completed; the main run " +
-             "fills by how close QUEST+ is to stopping — see RoundProgress for the formula.")]
+    [Tooltip("The fill of the HUD's progress bar. Anchored to the left edge of its track; its " +
+             "right anchor is driven from 0 to 1 as the phase progresses. Practice fills by " +
+             "rounds completed; the main run fills by how close QUEST+ is to stopping — see " +
+             "RoundProgress for the formula.")]
     public RectTransform progressFill;
 
     [Tooltip("ONE font for the whole game. Assign a TMP Font Asset here and everything follows it " +
@@ -25,7 +29,19 @@ public class UIManager : MonoBehaviour
     public TMP_FontAsset hudFont;
 
     [Header("Debug")]
+    [Tooltip("Show the live staircase readout. OFF for anything a participant plays, and off by " +
+             "default for that reason: the line spells out the stutter size QUEST+ is about to " +
+             "present, the threshold estimate so far and the trial count. A participant who reads " +
+             "it is being told the answer to the question the staircase is asking, and every trial " +
+             "after that measures their reading rather than their perception.")]
+    public bool showDebug = false;
+
     public TMP_Text debugText;
+
+    /// <summary>Whether the debug readout is being drawn at all. PerturbationController checks it
+    /// before building the line — the string is rebuilt on every response and once a second while
+    /// a round runs, and none of that work is worth doing for text nobody can see.</summary>
+    public bool DebugVisible => showDebug && debugText != null;
 
     [Header("Flash Timing")]
     [Min(0f)]    public float flashHold = 0.40f;
@@ -55,6 +71,82 @@ public class UIManager : MonoBehaviour
              "landing while the bar is still moving just bends its path — a tween restarted " +
              "from rest would visibly stall and set off again.")]
     [Min(0f)] public float progressSmoothSec = 0.5f;
+
+    [Tooltip("Re-place and restyle the scene's progress bar at startup: a long bar across the " +
+             "bottom of the screen with its name above it, instead of the short chip it sits at " +
+             "in the scene. Done here rather than by hand so the numbers below are the single " +
+             "source of truth and cannot drift from a nudged RectTransform. Uncheck to use " +
+             "whatever the scene has.")]
+    public bool layOutProgressBar = true;
+
+    [Tooltip("Bar width as a fraction of the screen. It is at the bottom, away from the play " +
+             "area, so it can afford to be long — and a long bar is what makes a small amount of " +
+             "progress visible at all.")]
+    [Range(0.2f, 1f)] public float progressWidthFraction = 0.66f;
+
+    [Tooltip("Bar height in pixels. The scene's 12 is a hairline at 1080p.")]
+    [Min(2f)] public float progressHeight = 28f;
+
+    [Tooltip("Pixels from the bottom of the screen to the bottom of the bar.")]
+    [Min(0f)] public float progressBottomMargin = 48f;
+
+    [Tooltip("Written above the bar. The bar alone does not say what it is counting, and a " +
+             "participant who reads it as a timer will pace themselves against it.")]
+    public string progressLabelText = "PROGRESS";
+
+    [Tooltip("Show the word during PRACTICE only, and leave the bar unlabelled in main rounds.\n\n" +
+             "Practice is where the bar has to be explained — it is the first time the participant " +
+             "sees one and they have no way to know what it counts. By the main run they do, and " +
+             "the word is then a block of text sitting on screen for the rest of the session with " +
+             "nothing left to say. Same reasoning as WeaponIndicator.nameDuringPracticeOnly.")]
+    public bool progressLabelDuringPracticeOnly = true;
+
+    [Min(6f)] public float progressLabelSize = 32f;
+    [Tooltip("Pixels between the top of the bar and the baseline box of its label.")]
+    [Min(0f)] public float progressLabelGap = 8f;
+
+    [Tooltip("Filled part. Bright and nearly opaque — this is the part that has to be readable " +
+             "at a glance from the middle of the screen.")]
+    public Color progressFillColor  = new(0.55f, 0.95f, 1f, 0.97f);
+    [Tooltip("Unfilled part. Dark enough that the boundary between the two is the thing you see.")]
+    public Color progressTrackColor = new(0f, 0f, 0f, 0.62f);
+    public Color progressLabelColor = new(0.90f, 0.96f, 1f, 0.92f);
+
+    [Header("Hit / Miss Tally")]
+    [Tooltip("Replace the score readout with a penalty-shootout strip: one pip per response, in " +
+             "order, filled green for a hit and red for a miss, hollow for a slot not reached " +
+             "yet.\n\n" +
+             "A score is a single number that mixes the two — a participant cannot tell 8 hits " +
+             "and 2 misses from 9 hits and 4 misses by looking at it, and the weighting is a " +
+             "config choice they were never told. The strip shows the run itself, in the order " +
+             "it happened, which a pair of counts cannot. The score is still computed and still " +
+             "logged; it is only off the HUD.")]
+    public bool showHitMissTally = true;
+
+    [Tooltip("How many responses the strip holds. A block can run to maxTrials (50 today), which " +
+             "is far too many pips to read, so the strip is a moving window: once it is full the " +
+             "oldest pip drops off the left and the newest appears on the right.")]
+    [Range(3, 20)] public int tallySlots = 12;
+
+    [Tooltip("Diameter of one pip in pixels.")]
+    [Min(6f)] public float tallyPipSize = 34f;
+    [Tooltip("Pixels between pips.")]
+    [Min(0f)] public float tallyPipSpacing = 12f;
+    [Tooltip("Size of the coloured centre as a fraction of the pip, so the hollow ring stays " +
+             "visible around a filled one and the strip reads as slots rather than as dots.")]
+    [Range(0.3f, 1f)] public float tallyFillScale = 0.74f;
+
+    public Color tallyHitColor  = new(0.30f, 1f, 0.45f, 1f);
+    public Color tallyMissColor = new(1f, 0.32f, 0.32f, 1f);
+    [Tooltip("The empty ring. Bright enough to be found against the sky, dim enough not to " +
+             "compete with the filled pips beside it.")]
+    public Color tallyEmptyColor = new(1f, 1f, 1f, 0.34f);
+
+    [Tooltip("How far the newest pip overshoots as it lands, and how long the landing takes. " +
+             "The pip appearing IS the feedback, so it has to be caught out of the corner of the " +
+             "eye — the participant is looking at the middle of the screen, not at the strip.")]
+    [Range(1f, 2.5f)] public float tallyPopScale = 1.7f;
+    [Min(0.05f)]      public float tallyPopSec   = 0.34f;
 
     [Header("Shockwave Vignette  (Violet)")]
     public Color shockwaveFlashColor = new(0.75f, 0.45f, 1f, 1f);
@@ -106,6 +198,21 @@ public class UIManager : MonoBehaviour
     float _progressVelocity;
     bool  _progressSettled = true;
 
+    // Penalty-shootout tally, built over the score text's slot. The outcomes list is the moving
+    // window — oldest first, at most tallySlots long — and _tallyCounted is how many responses
+    // the phase had produced when it was last appended to, which is how a new response is told
+    // apart from a repeat refresh of the same one.
+    readonly List<bool> _tallyOutcomes = new List<bool>();
+    int                 _tallyCounted;
+    RectTransform[]     _tallyPips;
+    Image[]             _tallyRings;
+    Image[]             _tallyFills;
+    Coroutine           _tallyCoroutine;
+    Texture2D           _discTex, _ringTex;
+
+    // The label above the progress bar, built once by ApplyProgressLayout.
+    TMP_Text _progressLabel;
+
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     void Awake()
@@ -128,6 +235,13 @@ public class UIManager : MonoBehaviour
             _scoreBaseColor = scoreText.color;
             _scoreBaseScale = scoreText.transform.localScale;
         }
+
+        // Off before the first frame is drawn, not on the first Update — a debug line that flashes
+        // up for a frame at the top of a session is still a line the participant can read.
+        if (debugText != null) debugText.gameObject.SetActive(showDebug);
+
+        if (showHitMissTally) BuildTally();
+        ApplyProgressLayout();
     }
 
     void OnEnable()
@@ -155,6 +269,14 @@ public class UIManager : MonoBehaviour
         if (_vignette    != null) Destroy(_vignette.gameObject);
         if (_vignetteTex != null) Destroy(_vignetteTex);
         if (_callout     != null) Destroy(_callout.gameObject);
+        if (_discTex     != null) Destroy(_discTex);
+        if (_ringTex     != null) Destroy(_ringTex);
+    }
+
+    public void SetDebugText(string text)
+    {
+        if (!showDebug || debugText == null) return;
+        debugText.text = text;
     }
 
     // ── Public API ────────────────────────────────────────────────────────
@@ -262,14 +384,16 @@ public class UIManager : MonoBehaviour
         _flashCoroutine = StartCoroutine(VignetteRoutine());
     }
 
-    public void SetDebugText(string text)
-    {
-        if (debugText != null) debugText.text = text;
-    }
-
     public void RefreshDisplayFromManagers(ScoreManager manager)
     {
-        if (manager != null) scoreManager = manager;
+        // Re-subscribed, not just reassigned. The strip is driven entirely by OnScored, so a
+        // handler left on the previous manager would leave it frozen for the whole session.
+        if (manager != null && manager != scoreManager)
+        {
+            if (scoreManager != null) scoreManager.OnScored -= HandleScored;
+            scoreManager = manager;
+            scoreManager.OnScored += HandleScored;
+        }
         RefreshScoreText();
         RefreshProgress();
     }
@@ -469,14 +593,309 @@ public class UIManager : MonoBehaviour
         return tex;
     }
 
-    // ── Score ─────────────────────────────────────────────────────────────
+    // ── Hit / miss tally ──────────────────────────────────────────────────
 
     void HandleScored(float shotScore, float totalScore, float distance) => RefreshScoreText();
 
+    /// <summary>
+    /// Brings the strip up to date with the score manager. Safe to call repeatedly for the same
+    /// response — several paths refresh the HUD after one shot, and only a genuine change in the
+    /// phase's response count adds a pip.
+    /// </summary>
     void RefreshScoreText()
     {
-        float total = scoreManager != null ? scoreManager.TotalScore : 0f;
-        if (scoreText != null) scoreText.text = $"Score: {total:0}";
+        if (_tallyPips != null)
+        {
+            int total = scoreManager != null ? scoreManager.Hits + scoreManager.Misses : 0;
+
+            // 0 is the reset between phases, announced by ScoreManager.ResetScore as a scored
+            // event of its own. The strip empties with it rather than carrying practice into the
+            // main run.
+            if (total == 0)
+            {
+                // Stopped before DrawTally, or a pop still in flight when the phase ended would
+                // go on writing a scale onto a pip the redraw had just put back.
+                if (_tallyCoroutine != null) { StopCoroutine(_tallyCoroutine); _tallyCoroutine = null; }
+                _tallyOutcomes.Clear();
+                _tallyCounted = 0;
+                DrawTally();
+                return;
+            }
+
+            if (total <= _tallyCounted) return;
+            _tallyCounted = total;
+
+            _tallyOutcomes.Add(scoreManager.LastWasHit);
+            while (_tallyOutcomes.Count > tallySlots) _tallyOutcomes.RemoveAt(0);
+
+            DrawTally();
+            PopNewestPip();
+            return;
+        }
+
+        if (scoreText != null)
+        {
+            float score = scoreManager != null ? scoreManager.TotalScore : 0f;
+            scoreText.text = $"Score: {score:0}";
+        }
+    }
+
+    // Paints the window onto the pips. The window is left-aligned while it is still filling, so
+    // the first response of a phase lands in the leftmost slot and the strip grows rightward the
+    // way a shootout does; once it is full every pip is occupied and the content scrolls instead.
+    void DrawTally()
+    {
+        if (_tallyPips == null) return;
+
+        for (int i = 0; i < _tallyPips.Length; i++)
+        {
+            bool filled = i < _tallyOutcomes.Count;
+            _tallyRings[i].color = tallyEmptyColor;
+            _tallyFills[i].color = filled
+                ? (_tallyOutcomes[i] ? tallyHitColor : tallyMissColor)
+                : Color.clear;
+
+            // Only the pip that is currently landing is ever off its own size; everything else is
+            // put back, so a response arriving mid-animation cannot leave a pip stranded large.
+            if (!IsNewestPip(i)) _tallyPips[i].localScale = Vector3.one;
+        }
+    }
+
+    int NewestPipIndex => Mathf.Min(_tallyOutcomes.Count, tallySlots) - 1;
+    bool IsNewestPip(int i) => i == NewestPipIndex;
+
+    void PopNewestPip()
+    {
+        int i = NewestPipIndex;
+        if (i < 0 || _tallyPips == null || i >= _tallyPips.Length) return;
+
+        if (_tallyCoroutine != null) StopCoroutine(_tallyCoroutine);
+        _tallyCoroutine = StartCoroutine(PipPopRoutine(_tallyPips[i]));
+    }
+
+    // Overshoot and settle, on unscaled time like every other HUD motion here — a stutter is a
+    // main-thread block, and anything timed off the scaled clock would carry it.
+    IEnumerator PipPopRoutine(RectTransform pip)
+    {
+        float elapsed = 0f;
+        while (elapsed < tallyPopSec)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            float t = Mathf.Clamp01(elapsed / tallyPopSec);
+
+            // Up fast, back slowly: a half-sine peaks early and decays, which reads as a landing
+            // rather than as a throb.
+            float overshoot = Mathf.Sin(Mathf.Pow(t, 0.45f) * Mathf.PI);
+            pip.localScale = Vector3.one * (1f + (tallyPopScale - 1f) * overshoot);
+            yield return null;
+        }
+
+        pip.localScale = Vector3.one;
+        _tallyCoroutine = null;
+    }
+
+    /// <summary>
+    /// Builds the strip over the score readout's slot and switches the readout itself off.
+    ///
+    /// The scoreText component is disabled rather than its GameObject: WeaponIndicator measures
+    /// that RectTransform to line the weapon chip up with the HUD row, and a deactivated object
+    /// is not laid out.
+    /// </summary>
+    void BuildTally()
+    {
+        if (scoreText == null || _tallyPips != null) return;
+
+        RectTransform anchor = scoreText.rectTransform;
+        var parent = anchor.parent as RectTransform;
+        if (parent == null) return;
+
+        var rowGo = new GameObject("HitMissTally", typeof(RectTransform));
+        rowGo.transform.SetParent(parent, false);
+        rowGo.transform.SetSiblingIndex(anchor.GetSiblingIndex());
+
+        // Copied from the slot the score occupied rather than re-specified, so the strip lands
+        // exactly where the HUD row already was however the scene has it anchored.
+        var row = rowGo.GetComponent<RectTransform>();
+        row.anchorMin        = anchor.anchorMin;
+        row.anchorMax        = anchor.anchorMax;
+        row.pivot            = anchor.pivot;
+        row.anchoredPosition = anchor.anchoredPosition;
+        row.sizeDelta        = anchor.sizeDelta;
+
+        var group = rowGo.AddComponent<HorizontalLayoutGroup>();
+        group.spacing                = tallyPipSpacing;
+        group.childAlignment         = TextAnchor.MiddleLeft;
+        group.childForceExpandWidth  = false;
+        group.childForceExpandHeight = false;
+
+        var fitter = rowGo.AddComponent<ContentSizeFitter>();
+        fitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+        fitter.verticalFit   = ContentSizeFitter.FitMode.PreferredSize;
+
+        _ringTex = BuildRingTexture(96, thicknessFrac: 0.16f);
+        _discTex = BuildDiscTexture(96);
+        Sprite ring = ToSprite(_ringTex);
+        Sprite disc = ToSprite(_discTex);
+
+        _tallyPips  = new RectTransform[tallySlots];
+        _tallyRings = new Image[tallySlots];
+        _tallyFills = new Image[tallySlots];
+
+        for (int i = 0; i < tallySlots; i++)
+        {
+            var pipGo = new GameObject($"Pip_{i}", typeof(RectTransform));
+            pipGo.transform.SetParent(rowGo.transform, false);
+
+            var pip = pipGo.GetComponent<RectTransform>();
+            pip.sizeDelta = new Vector2(tallyPipSize, tallyPipSize);
+
+            // The layout group sizes children from what they report, and a bare RectTransform
+            // reports nothing — without this the pips collapse to zero width.
+            var le = pipGo.AddComponent<LayoutElement>();
+            le.preferredWidth  = tallyPipSize;
+            le.preferredHeight = tallyPipSize;
+
+            _tallyRings[i] = AddPipImage(pipGo.transform, "Ring", ring, tallyPipSize);
+            _tallyFills[i] = AddPipImage(pipGo.transform, "Fill", disc,
+                                          tallyPipSize * tallyFillScale);
+            _tallyPips[i]  = pip;
+        }
+
+        scoreText.enabled = false;
+        DrawTally();
+    }
+
+    static Image AddPipImage(Transform parent, string name, Sprite sprite, float size)
+    {
+        var go = new GameObject(name, typeof(RectTransform));
+        go.transform.SetParent(parent, false);
+
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot     = new Vector2(0.5f, 0.5f);
+        rt.sizeDelta = new Vector2(size, size);
+        rt.anchoredPosition = Vector2.zero;
+
+        var img = go.AddComponent<Image>();
+        img.sprite        = sprite;
+        img.type          = Image.Type.Simple;
+        img.raycastTarget = false;
+        return img;
+    }
+
+    static Sprite ToSprite(Texture2D tex) =>
+        Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
+
+    /// <summary>A filled circle with a soft edge, so a pip is round rather than a stair-stepped
+    /// blob at the size it is drawn.</summary>
+    static Texture2D BuildDiscTexture(int res)
+    {
+        var tex = NewPipTexture(res);
+        var px  = new Color32[res * res];
+
+        const float radius = 0.47f;
+        for (int y = 0; y < res; y++)
+        for (int x = 0; x < res; x++)
+        {
+            float nx = x / (float)(res - 1) - 0.5f;
+            float ny = y / (float)(res - 1) - 0.5f;
+            float r  = Mathf.Sqrt(nx * nx + ny * ny);
+            float a  = 1f - Mathf.SmoothStep(radius - 0.02f, radius, r);
+            px[y * res + x] = new Color32(255, 255, 255, (byte)(a * 255f));
+        }
+
+        tex.SetPixels32(px);
+        tex.Apply();
+        return tex;
+    }
+
+    /// <summary>The empty slot: a ring, not a disc, so an untaken pip reads as waiting rather
+    /// than as a dim outcome of its own.</summary>
+    static Texture2D BuildRingTexture(int res, float thicknessFrac)
+    {
+        var tex = NewPipTexture(res);
+        var px  = new Color32[res * res];
+
+        const float radius = 0.42f;
+        float half = Mathf.Max(0.01f, thicknessFrac) * 0.5f;
+
+        for (int y = 0; y < res; y++)
+        for (int x = 0; x < res; x++)
+        {
+            float nx = x / (float)(res - 1) - 0.5f;
+            float ny = y / (float)(res - 1) - 0.5f;
+            float r  = Mathf.Sqrt(nx * nx + ny * ny);
+            float a  = 1f - Mathf.SmoothStep(0f, 1f, Mathf.Abs(r - radius) / half);
+            px[y * res + x] = new Color32(255, 255, 255, (byte)(a * 255f));
+        }
+
+        tex.SetPixels32(px);
+        tex.Apply();
+        return tex;
+    }
+
+    static Texture2D NewPipTexture(int res) =>
+        new Texture2D(res, res, TextureFormat.RGBA32, false)
+        {
+            filterMode = FilterMode.Bilinear,
+            wrapMode   = TextureWrapMode.Clamp,
+        };
+
+    // ── Progress bar placement ────────────────────────────────────────────
+
+    /// <summary>
+    /// Moves the scene's progress bar to a long strip along the bottom of the screen, restyles it
+    /// for contrast, and writes its name above it.
+    ///
+    /// Bottom rather than the top-right corner it sat in: the top of the screen is where the
+    /// weapon chip and the tally are, and where the play area starts. The bar has no bearing on
+    /// what the participant is doing from moment to moment, so it belongs out of the way — and
+    /// once it is out of the way it can be long, which is what makes one round's worth of
+    /// progress a visible amount of movement rather than two pixels.
+    /// </summary>
+    void ApplyProgressLayout()
+    {
+        if (!layOutProgressBar || progressFill == null) return;
+
+        var root = progressFill.parent as RectTransform;
+        if (root == null) return;
+
+        float half = Mathf.Clamp01(progressWidthFraction) * 0.5f;
+        root.anchorMin        = new Vector2(0.5f - half, 0f);
+        root.anchorMax        = new Vector2(0.5f + half, 0f);
+        root.pivot            = new Vector2(0.5f, 0f);
+        root.anchoredPosition = new Vector2(0f, progressBottomMargin);
+        // X is 0 because the anchors already span the width; only the height is literal.
+        root.sizeDelta        = new Vector2(0f, progressHeight);
+
+        var fillImage = progressFill.GetComponent<Image>();
+        if (fillImage != null) fillImage.color = progressFillColor;
+
+        foreach (Image img in root.GetComponentsInChildren<Image>(includeInactive: true))
+            if (img != fillImage) img.color = progressTrackColor;
+
+        if (_progressLabel == null && !string.IsNullOrEmpty(progressLabelText))
+        {
+            var go = new GameObject("ProgressLabel", typeof(RectTransform));
+            go.transform.SetParent(root, false);
+
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin        = new Vector2(0f, 1f);
+            rt.anchorMax        = new Vector2(1f, 1f);
+            rt.pivot            = new Vector2(0.5f, 0f);
+            rt.offsetMin        = new Vector2(0f, progressLabelGap);
+            rt.offsetMax        = new Vector2(0f, progressLabelGap + progressLabelSize * 1.4f);
+
+            _progressLabel = go.AddComponent<TextMeshProUGUI>();
+            _progressLabel.fontSize         = progressLabelSize;
+            _progressLabel.fontStyle        = FontStyles.Bold;
+            _progressLabel.alignment        = TextAlignmentOptions.Center;
+            _progressLabel.raycastTarget    = false;
+            _progressLabel.textWrappingMode = TextWrappingModes.NoWrap;
+            _progressLabel.color            = progressLabelColor;
+            _progressLabel.text             = progressLabelText;
+            HudFont.Apply(_progressLabel);
+        }
     }
 
     // ── Flash ─────────────────────────────────────────────────────────────
@@ -505,9 +924,14 @@ public class UIManager : MonoBehaviour
         if (_vignette != null) _vignette.color = new Color(0f, 0f, 0f, 0f);
     }
 
+    /// <summary>
+    /// Beats the score readout. With the shootout strip up there is nothing to beat here — the
+    /// pip landing is the feedback, and it is already in flight by now: ScoreManager announces the
+    /// response before GameManager shows it, so the pip was appended and popped on this same frame.
+    /// </summary>
     void PulseScore(Color flashColor, bool positive)
     {
-        if (scoreText == null) return;
+        if (_tallyPips != null || scoreText == null) return;
         if (_scoreCoroutine != null) StopCoroutine(_scoreCoroutine);
         _scoreCoroutine = StartCoroutine(ScorePulseRoutine(flashColor, positive));
     }

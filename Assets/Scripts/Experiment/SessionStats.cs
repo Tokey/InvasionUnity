@@ -119,6 +119,21 @@ namespace JndUfo
         /// trials.</summary>
         public float AvgSpikesBeforeShot => MeanInt(_spikesBeforeShot);
 
+        // How long after the most recent stutter each response came — the shot log's
+        // sinceLastSpikeSec, over every response that fired with a stutter somewhere behind it.
+        // Both weapons: on the laser it is how long the participant took to shoot after the
+        // crossing that threw the stutter (the number that says whether the stutter could still
+        // be disturbing their aim); on shockwave it is the raw press-after-stutter interval,
+        // including early presses and late ones, where the detection-only AvgReactionSec is not.
+        readonly List<float> _sinceLastSpike = new List<float>(128);
+
+        /// <summary>Mean seconds from the most recent stutter to the response. 0 when no
+        /// response had a stutter behind it.</summary>
+        public float AvgSinceLastSpikeSec => Mean(_sinceLastSpike);
+        /// <summary>Shortest such interval. NaN when there are none.</summary>
+        public float MinSinceLastSpikeSec { get; private set; } = float.NaN;
+        public float MaxSinceLastSpikeSec { get; private set; } = float.NaN;
+
         /// <summary>Mean response time over detections, in seconds. 0 when there are none.</summary>
         public float AvgReactionSec => Mean(_reactionTimes);
         /// <summary>Fastest response over detections. NaN when there are none.</summary>
@@ -198,6 +213,15 @@ namespace JndUfo
             int before = Mathf.Max(0, s.spikesSinceLastShot);
             _spikesBeforeShot.Add(before);
             if (before == 0) ShotsBeforeSpike++; else ShotsAfterSpike++;
+
+            if (!float.IsNaN(s.sinceLastSpikeSec))
+            {
+                _sinceLastSpike.Add(s.sinceLastSpikeSec);
+                if (float.IsNaN(MinSinceLastSpikeSec) || s.sinceLastSpikeSec < MinSinceLastSpikeSec)
+                    MinSinceLastSpikeSec = s.sinceLastSpikeSec;
+                if (float.IsNaN(MaxSinceLastSpikeSec) || s.sinceLastSpikeSec > MaxSinceLastSpikeSec)
+                    MaxSinceLastSpikeSec = s.sinceLastSpikeSec;
+            }
 
             // Miss geometry is not. An shockwave timeout has no shot and so no landing point;
             // folding it in as zero would read as a perfectly-centred shot and drag every

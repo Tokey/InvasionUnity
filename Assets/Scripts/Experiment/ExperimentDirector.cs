@@ -102,7 +102,33 @@ namespace JndUfo
         /// <summary>The block currently running — one row of ExperimentConfig.csv.</summary>
         public StudyConfig Config { get; private set; }
 
+        /// <summary>The counterbalancing square, and this session's row of it.</summary>
+        public LatinSquare Square    { get; private set; }
+        public int         SquareRow { get; private set; }
+
+        /// <summary>This session's running order, as 1-based ExperimentConfig.csv row numbers.</summary>
+        public int[] BlockOrder { get; private set; } = new int[0];
+
+        /// <summary>1-based position of the block in progress within this session's order — the
+        /// counterpart to StudyConfig.blockIndex, which identifies the SETTING rather than when it
+        /// was played. Both go into every log; order effects are only analysable with both.</summary>
+        public int BlockOrdinal { get; private set; }
+
+        /// <summary>How many times this session has handed out the block's weapon, counting this
+        /// block: 1 on its first appearance, 2 on its repeat. Decides which practice ladder runs,
+        /// and is logged so a repeat block's shorter warm-up is visible in the data.</summary>
+        public int WeaponRun { get; private set; } = 1;
+
+        // The blocks in FILE order, as loaded. RunSession walks them through BlockOrder.
         List<StudyConfig> _blocks;
+
+        // Weapons already practised this session, so the second block of a weapon gets the short
+        // ladder wherever the square happens to have put it.
+        readonly Dictionary<WeaponKind, int> _weaponRuns = new Dictionary<WeaponKind, int>();
+
+        // The ladder the block in progress is practising with — the first-exposure one or the
+        // repeat one. Empty means this block has no practice phase.
+        List<float> _practiceLadder = new List<float>();
 
         /// <summary>Kept for the gameplay scripts that gate on "are we playing right now".</summary>
         public bool RoundActive => SessionActive;
@@ -116,7 +142,7 @@ namespace JndUfo
         {
             get
             {
-                int trials = Config != null ? Config.PracticeTrials : 0;
+                int trials = _practiceLadder != null ? _practiceLadder.Count : 0;
                 return trials > 0 ? Mathf.Clamp01(_roundNumber / (float)trials) : 0f;
             }
         }
@@ -192,6 +218,7 @@ namespace JndUfo
         void Awake()
         {
             Instance = this;
+            QuietenConsoleLogging();
             ResolveReferences();
 
             _blocks = StudyConfig.LoadAll();
@@ -202,12 +229,70 @@ namespace JndUfo
                 return;
             }
 
-            Config    = _blocks[0];
             SessionId = SessionState.Reserve();
-            _logger   = new ExperimentLogger(SessionId, Config);
+
+            // The square is loaded against the config's row count, so a mismatch between the two
+            // files is caught here rather than surfacing as a missing block mid-session.
+            Square     = LatinSquare.Load(_blocks.Count);
+            SquareRow  = Square.RowForSession(SessionId);
+            BlockOrder = Square.OrderForSession(SessionId);
+
+            Config  = _blocks[BlockIndexAt(0)];
+            _logger = new ExperimentLogger(SessionId, Config);
 
             Debug.Log($"[ExperimentDirector] Session {SessionId} — {_blocks.Count} block(s) of " +
-                      $"'{Config.label}' [{Config.testMode}]");
+                      $"'{Config.label}' [{Config.testMode}], square row {SquareRow}/" +
+                      $"{Square.RowCount}, order {LatinSquare.OrderText(BlockOrder)} " +
+                      $"({DescribeOrder()})");
+        }
+
+        /// <summary>
+        /// Drops stack traces from ordinary log and warning lines.
+        ///
+        /// Several messages are written on EVERY response — the score, the resolved trial, the
+        /// shot result — and a Unity log call's dominant cost is not the string, it is walking and
+        /// formatting the managed stack. That is tens of microseconds to a millisecond of main
+        /// thread, and in the shockwave task it lands mid-round: an early press is logged and the
+        /// round carries on toward its next stutter, so the cost sits inside the interval the
+        /// participant is being asked to judge. The one thing this study cannot have is unbudgeted
+        /// main-thread work near the stimulus.
+        ///
+        /// The messages themselves stay — they are how a pilot session is followed in the Console,
+        /// and as plain strings they are cheap. Errors and exceptions keep their traces, which is
+        /// the only place a trace is worth anything.
+        /// </summary>
+        static void QuietenConsoleLogging()
+        {
+            Application.SetStackTraceLogType(LogType.Log,     StackTraceLogType.None);
+            Application.SetStackTraceLogType(LogType.Warning, StackTraceLogType.None);
+        }
+
+        /// <summary>
+        /// Turns a position in this session's order into an index into <see cref="_blocks"/>.
+        /// Clamped rather than trusted: the square is validated at load, but a session must not
+        /// fall over on an out-of-range cell that slipped through.
+        /// </summary>
+        int BlockIndexAt(int ordinalZeroBased)
+        {
+            if (BlockOrder == null || BlockOrder.Length == 0) return 0;
+            int oneBased = BlockOrder[Mathf.Clamp(ordinalZeroBased, 0, BlockOrder.Length - 1)];
+            return Mathf.Clamp(oneBased - 1, 0, _blocks.Count - 1);
+        }
+
+        // "shockwave@60 → laser@500 → …", for the startup line. Worth spelling out: the order is
+        // the one thing about a session that differs between participants and cannot be read off
+        // the config file.
+        string DescribeOrder()
+        {
+            if (BlockOrder == null || BlockOrder.Length == 0) return "";
+            var parts = new List<string>(BlockOrder.Length);
+            for (int i = 0; i < BlockOrder.Length; i++)
+            {
+                StudyConfig b = _blocks[BlockIndexAt(i)];
+                parts.Add($"{b.weapon.ToString().ToLowerInvariant()}@" +
+                          (b.unityApplicationFps > 0 ? b.unityApplicationFps + "fps" : "uncapped"));
+            }
+            return string.Join(" → ", parts);
         }
 
         void Start()
@@ -324,10 +409,25 @@ namespace JndUfo
 
             // Each row of ExperimentConfig.csv is one block — an independent QUEST+ run, with
             // its own frame-rate cap. They share one session and append to the same three files.
-            for (int i = 0; i < _blocks.Count; i++)
+            //
+            // The ORDER is this session's row of the Latin square, not file order: every setting
+            // takes every position equally often across participants, so neither position nor the
+            // setting played before it is confounded with the threshold a setting produces.
+            for (int i = 0; i < BlockOrder.Length; i++)
             {
-                Config = _blocks[i];
-                _logger.BeginBlock(Config);
+                BlockOrdinal = i + 1;
+                Config       = _blocks[BlockIndexAt(i)];
+
+                // Counted here, before the block runs, so the block's own log rows carry the run
+                // number that chose its practice ladder.
+                _weaponRuns.TryGetValue(Config.weapon, out int runs);
+                WeaponRun = runs + 1;
+                _weaponRuns[Config.weapon] = WeaponRun;
+
+                _practiceLadder = Config.PracticeLadder(firstForThisWeapon: WeaponRun == 1);
+
+                _logger.BeginBlock(Config, BlockOrdinal, SquareRow,
+                                    LatinSquare.OrderText(BlockOrder), WeaponRun);
                 yield return RunBlock(i);
             }
 
@@ -391,15 +491,25 @@ namespace JndUfo
                 towerManager.ApplyVisibility();
             }
 
+            // The two weapons get their own palette — the UFO the participant flies and the hue of
+            // the ground fog it flies over. Applied per block so the screen says which task is
+            // running the whole time, not only in the start prompt and the HUD chip. Hue only, at
+            // matched brightness: see UfoController.ApplyWeaponLook and TowerManager.ApplyWeaponFog.
+            if (ufo          != null) ufo.ApplyWeaponLook(Config.weapon);
+            if (towerManager != null) towerManager.ApplyWeaponFog(Config.weapon);
+
             // ── Practice ─────────────────────────────────────────────────────
             // Warm-up shots at a fixed stutter size. They are logged in full but tagged
             // phase=practice, and PerturbationController discards their outcomes, so nothing
             // here can move the QUEST+ posterior.
-            int practiceTrials = Config.PracticeTrials;
+            //
+            // How MANY depends on whether this session has met this weapon yet: the full ladder on
+            // its first block, the short one on the repeat. See StudyConfig.PracticeLadder.
+            int practiceTrials = _practiceLadder.Count;
             if (practiceTrials > 0)
             {
                 _logger.CurrentPhase = "practice";
-                perturbation?.SetPractice(true, Config.practiceStuttersMs[0]);
+                perturbation?.SetPractice(true, _practiceLadder[0]);
 
                 yield return WaitForStartKey($"PRACTICE — {weaponLabel}", StartPrompt());
                 yield return PhaseStartingGun();
@@ -411,7 +521,7 @@ namespace JndUfo
                 // the answer the main run is about to ask for.
                 for (int i = 0; i < practiceTrials; i++)
                 {
-                    perturbation?.SetPractice(true, Config.practiceStuttersMs[i]);
+                    perturbation?.SetPractice(true, _practiceLadder[i]);
                     overlay.ShowBanner($"PRACTICE — {weaponLabel} — round {i + 1} of {practiceTrials}");
 
                     int target = i + 1;
@@ -474,8 +584,9 @@ namespace JndUfo
             float jnd = perturbation != null && perturbation.ActiveStaircase != null
                 ? perturbation.ActiveStaircase.JndEstimate()
                 : float.NaN;
-            Debug.Log($"[ExperimentDirector] Block {index + 1}/{_blocks.Count} " +
-                      $"({Config.weapon.ToString().ToLowerInvariant()}, {capLabel}) " +
+            Debug.Log($"[ExperimentDirector] Block {index + 1}/{BlockOrder.Length} " +
+                      $"(config row {Config.blockIndex}, " +
+                      $"{Config.weapon.ToString().ToLowerInvariant()} run {WeaponRun}, {capLabel}) " +
                       $"complete ({_endReason}) — JND estimate {jnd:0.0} ms. " +
                       (Config.IsShockwave
                           ? $"{_stats.ShockwaveDetections} detected / {_stats.ShockwaveEarly} early / " +
@@ -531,6 +642,11 @@ namespace JndUfo
             // everything practice delivered, and baselining at zero would charge the first main
             // trial with every practice stutter in its spikesSinceLastShot.
             _spikeCountAtLastShot = perturbation != null ? perturbation.SpikeCount : 0;
+            // And the list to match the count: a laser crossing between phases — during the last
+            // reveal, or under the start prompt, where the ship still flies — would otherwise sit
+            // in the first row's stuttersMs while spikesSinceLastShot, baselined just above,
+            // said there was none.
+            perturbation?.ResetStutterBurst();
             _hasPrevUfoPos        = false;
             _startRealtime        = Time.unscaledTime;
 
@@ -775,7 +891,7 @@ namespace JndUfo
         ///
         /// The alert's lifetime differs per weapon, because what it stands for does. On the laser
         /// it says "fire here" and there is no deadline, so it holds until the shot. On shockwave
-        /// it says "fire NOW" and the window is half a second: once the window closes it is an
+        /// it says "fire NOW" and the window is 0.4 s: once the window closes it is an
         /// instruction to fail, so it is released and the standing prompt returns — until the next
         /// presentation flashes it again. That rhythm, alert / prompt / alert, is also the closest
         /// thing practice has to teaching how short the window is.
@@ -850,6 +966,18 @@ namespace JndUfo
             bool answersStutter = trial.outcome == ShockwaveOutcome.Detected ||
                                   trial.outcome == ShockwaveOutcome.Late;
 
+            // The most recent stutter of the PHASE, whichever round it was in and whichever
+            // weapon threw it — the plain "how long since the last stutter" that both tasks want,
+            // as opposed to spikeAtSec, which is scoped to the round. A stutter from before the
+            // phase opened is not this phase's: it is dropped rather than rebased to a negative
+            // time. (The burst list was drained at BeginPhase for the same reason.)
+            float lastSpikeRt  = perturbation != null ? perturbation.LastSpikeEndRealtime : float.NaN;
+            float lastSpikeAt  = !float.IsNaN(lastSpikeRt) && lastSpikeRt >= _trialClockOrigin
+                ? ToPhaseClock(lastSpikeRt) : float.NaN;
+            float firedAt      = ToPhaseClock(trial.firedAt);
+            float sinceLastSpk = float.IsNaN(firedAt) || float.IsNaN(lastSpikeAt)
+                ? float.NaN : firedAt - lastSpikeAt;
+
             // Picked up by this frame's LateUpdate row.
             _shotFiredThisFrame = true;
             _shotHitXThisFrame  = hitPoint.x;
@@ -888,12 +1016,15 @@ namespace JndUfo
                 ufoY       = ufo != null ? ufo.transform.position.y : 0f,
                 side       = perturbation != null ? perturbation.CurrentSide.ToString() : "",
 
+                lastSpikeAtSec     = lastSpikeAt,
+                sinceLastSpikeSec  = sinceLastSpk,
+
                 outcome            = OutcomeLabel(trial.outcome),
                 playerFired        = trial.playerFired,
                 countedByStaircase = trial.countedByStaircase && _logger.CurrentPhase != "practice",
                 trialStartSec      = ToPhaseClock(trial.trialArmedAt),
                 spikeAtSec         = ToPhaseClock(trial.spikeAt),
-                firedAtSec         = ToPhaseClock(trial.firedAt),
+                firedAtSec         = firedAt,
                 reactionSec        = answersStutter ? trial.firedAt - trial.spikeAt : float.NaN,
                 spikeDelaySec      = trial.delaySec,
                 windowSec          = trial.windowSec,

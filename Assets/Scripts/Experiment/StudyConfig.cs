@@ -29,6 +29,7 @@ namespace JndUfo
     /// plus one value row per block. Four groups of columns and nothing else —
     ///
     ///   round      label, roundsPerSession, roundDurationSec, maxSpikesPerRound, roundTimeoutSec
+    ///   practice   practiceStuttersMs, practiceRepeatStuttersMs
     ///   weapon     weapon, swSpikeDelayMin/MaxSec, swWindowSec, swRespikeMin/MaxSec,
     ///              swMaxEarlyPerRound
     ///   task       closeRadius, showHitZone, crossingDeadZone, fireCooldown, revealHoldSec,
@@ -100,18 +101,21 @@ namespace JndUfo
         /// Both delays are randomised rather than fixed so the participant cannot learn one
         /// rhythm and run the whole block off a metronome.
         ///
-        /// Chance level is set by W against the two spreads and by how many early presses are
-        /// forgiven — see <see cref="ShockwaveGuessRate"/> for the model — so these numbers set
-        /// guessRate between them and cannot be chosen independently of it. A 1.5-3 s first
-        /// delay, 0.5 s window, 1-2 s re-spike gap and one forgiven early press come to 0.556,
-        /// which is what the shockwave row carries. Widening either spread or forgiving fewer
-        /// early presses lowers it; widening the window raises it.
+        /// Chance level is set by W against the first-delay spread and by how many early presses
+        /// are forgiven — see <see cref="ShockwaveGuessRate"/> for the model — so these numbers
+        /// set guessRate between them and cannot be chosen independently of it. A 1.5-3 s first
+        /// delay, 0.4 s window and one forgiven early press come to 1 − (1 − 0.4/1.5)² = 0.462,
+        /// which is what the shockwave rows carry. Widening the spread or forgiving fewer early
+        /// presses lowers it; widening the window raises it. The re-spike gap does not enter.
+        ///
+        /// The re-spike gap is drawn from the same 1.5-3 s span as the first delay, so a
+        /// re-presentation is exactly as unpredictable as a round's first stutter.
         /// </summary>
         public float swSpikeDelayMinSec = 1.5f;
         public float swSpikeDelayMaxSec = 3f;
-        public float swWindowSec        = 0.5f;
-        public float swRespikeMinSec    = 1f;
-        public float swRespikeMaxSec    = 2f;
+        public float swWindowSec        = 0.4f;
+        public float swRespikeMinSec    = 1.5f;
+        public float swRespikeMaxSec    = 3f;
 
         /// <summary>
         /// Shockwave only: how many presses BEFORE the round's first stutter are forgiven. Each
@@ -168,9 +172,10 @@ namespace JndUfo
         public readonly float maxDurationSec = 0f;
 
         /// <summary>
-        /// Stutter size (ms) for each warm-up shot, in order — one entry per practice trial, so
-        /// the list length *is* the trial count. Semicolon-separated in the CSV because commas
-        /// are the column delimiter. Empty disables the practice phase entirely.
+        /// Stutter size (ms) for each warm-up shot the FIRST time this session hands the
+        /// participant this weapon, in order — one entry per practice trial, so the list length
+        /// *is* the trial count. Semicolon-separated in the CSV because commas are the column
+        /// delimiter. Empty disables the practice phase entirely.
         ///
         /// Fixed values rather than adaptive ones, precisely because practice must not inform
         /// the staircase. A descending ladder (450;300;200;100;50) shows the participant what a
@@ -178,8 +183,44 @@ namespace JndUfo
         /// </summary>
         public List<float> practiceStuttersMs = new List<float>();
 
-        /// <summary>Number of warm-up shots — one per entry in practiceStuttersMs.</summary>
-        public int PracticeTrials => practiceStuttersMs != null ? practiceStuttersMs.Count : 0;
+        /// <summary>
+        /// The shorter ladder used when this session has ALREADY practised this weapon — the
+        /// second and later blocks of the same task.
+        ///
+        /// The full ladder teaches two things: what a frame-time stutter looks like, and what the
+        /// response for this weapon is. Neither has to be taught twice, and re-running five
+        /// obvious stutters before every repeat block is time the participant spends not being
+        /// measured — worse, it is five more supra-threshold presentations of the stimulus, which
+        /// is exactly the thing the main run needs them to stay uncertain about. One re-acquaintance
+        /// round is enough to hand the weapon back.
+        ///
+        /// Which ladder a block gets is decided by the ORDER the session actually runs, not by the
+        /// block's position in the file — with the Latin square above, row 3 can be the first
+        /// laser block of the session. See <see cref="LatinSquare"/> and ExperimentDirector.
+        ///
+        /// Empty falls back to the first entry of <see cref="practiceStuttersMs"/>, so a config
+        /// written before this column existed still gets one warm-up round rather than none.
+        /// </summary>
+        public List<float> practiceRepeatStuttersMs = new List<float>();
+
+        /// <summary>
+        /// The ladder for this block, given whether the session has practised this weapon yet.
+        /// Never null; empty means no practice phase.
+        /// </summary>
+        public List<float> PracticeLadder(bool firstForThisWeapon)
+        {
+            if (firstForThisWeapon) return practiceStuttersMs ?? new List<float>();
+
+            if (practiceRepeatStuttersMs != null && practiceRepeatStuttersMs.Count > 0)
+                return practiceRepeatStuttersMs;
+
+            // No repeat column: one round at the top of the full ladder — the most obvious
+            // stutter it carries — rather than the whole thing again or nothing at all.
+            if (practiceStuttersMs != null && practiceStuttersMs.Count > 0)
+                return new List<float> { practiceStuttersMs[0] };
+
+            return new List<float>();
+        }
 
         // ── Scoring ──────────────────────────────────────────────────────────
         /// <summary>Score for a hit. Also defines a hit: isHit is shotScore >= hitPoints.</summary>
@@ -221,7 +262,7 @@ namespace JndUfo
         /// laser guessRate is calibrated for 16:9 — the same r = 5 gives γ = 0.167 on 21:9, so an
         /// ultrawide session needs its own guessRate or QUEST+ is handed the wrong chance level.
         /// </summary>
-        public readonly float closeRadius      = 5f;
+        public readonly float closeRadius      = 5.5f;
         public readonly bool  showHitZone      = true;
         public readonly float crossingDeadZone = 0.25f;
         public readonly float fireCooldown     = 0.25f;
@@ -236,6 +277,25 @@ namespace JndUfo
         /// that model lets a blind participant probe every fireCooldown, and this permits fewer.
         /// </summary>
         public readonly float swEarlyLockoutSec = 1f;
+
+        /// <summary>
+        /// Shockwave PRACTICE only: how many times a practice round may present its stutter
+        /// unanswered before the round closes as a miss and the ladder moves on. 0 = no extra cap
+        /// (the block's maxSpikesPerRound alone applies, as it does in the main run).
+        ///
+        /// Practice rounds are lessons at obvious stutter sizes, not measurements. A participant
+        /// who has watched the same 450 ms stutter three times and not fired is not going to learn
+        /// more from seven further looks at it — they are going to sit through 20 s of a round
+        /// that is teaching nothing, and the ladder has four more sizes to show them. Three is
+        /// enough to make "it comes again if you miss it" visible, which is the one thing about
+        /// the task the first round has to teach.
+        ///
+        /// Pinned rather than a CSV column, like the other task-shape settings: it changes how the
+        /// warm-up feels, never what the main run measures. Late presses do not add to the count —
+        /// a late press answers a stutter that already went unanswered — and early presses are
+        /// forgiven without limit in practice, so only unanswered windows are counted.
+        /// </summary>
+        public readonly int   practiceMaxMissesPerRound = 3;
         public readonly float revealHoldSec    = 1.5f;
         /// <summary>How long "GO!" holds and shakes before firing is handed back. Pinned here and
         /// pushed onto GameManager each block, like revealHoldSec, so the scene's serialised
@@ -259,9 +319,13 @@ namespace JndUfo
         // ── Loading ──────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Loads every row of Data/ExperimentConfig.csv — one block each, run back to back in
-        /// file order within a single session. Writes a default file first if none exists.
-        /// Returns an empty list if the file has a header but no value rows.
+        /// Loads every row of Data/ExperimentConfig.csv — one block each, run back to back within
+        /// a single session. Writes a default file first if none exists. Returns an empty list if
+        /// the file has a header but no value rows.
+        ///
+        /// File order is the SETTINGS' identity, not the running order: <see cref="blockIndex"/> is
+        /// the row's position here and follows it into every log, while the order a participant
+        /// actually plays them in comes from <see cref="LatinSquare"/> and varies by session.
         /// </summary>
         public static List<StudyConfig> LoadAll()
         {
@@ -305,7 +369,8 @@ namespace JndUfo
             var c = new StudyConfig { Row = row };
 
             c.unityApplicationFps = CsvTable.GetInt(row, "unityApplicationFps", 0);
-            c.practiceStuttersMs = ParseMsList(CsvTable.GetString(row, "practiceStuttersMs", ""));
+            c.practiceStuttersMs       = ParseMsList(CsvTable.GetString(row, "practiceStuttersMs", ""));
+            c.practiceRepeatStuttersMs = ParseMsList(CsvTable.GetString(row, "practiceRepeatStuttersMs", ""));
 
             c.hitPoints  = CsvTable.GetFloat(row, "hitPoints", 100f);
             c.missPoints = CsvTable.GetFloat(row, "missPoints", -10f);
@@ -317,8 +382,8 @@ namespace JndUfo
             // row with min > max would otherwise hand Random.Range a reversed span.
             c.swSpikeDelayMinSec = Mathf.Max(0f, CsvTable.GetFloat(row, "swSpikeDelayMinSec", 1.5f));
             c.swSpikeDelayMaxSec = Mathf.Max(0f, CsvTable.GetFloat(row, "swSpikeDelayMaxSec", 3f));
-            c.swRespikeMinSec    = Mathf.Max(0f, CsvTable.GetFloat(row, "swRespikeMinSec", 1f));
-            c.swRespikeMaxSec    = Mathf.Max(0f, CsvTable.GetFloat(row, "swRespikeMaxSec", 2f));
+            c.swRespikeMinSec    = Mathf.Max(0f, CsvTable.GetFloat(row, "swRespikeMinSec", 1.5f));
+            c.swRespikeMaxSec    = Mathf.Max(0f, CsvTable.GetFloat(row, "swRespikeMaxSec", 3f));
             Order(ref c.swSpikeDelayMinSec, ref c.swSpikeDelayMaxSec);
             Order(ref c.swRespikeMinSec,    ref c.swRespikeMaxSec);
 
@@ -327,7 +392,7 @@ namespace JndUfo
             // than silently dropped to the default, so an un-migrated config keeps its intent.
             if (row.ContainsKey("swWindowSec") || !row.ContainsKey("swWindowMinSec"))
             {
-                c.swWindowSec = CsvTable.GetFloat(row, "swWindowSec", 0.5f);
+                c.swWindowSec = CsvTable.GetFloat(row, "swWindowSec", 0.4f);
             }
             else
             {
@@ -513,13 +578,16 @@ namespace JndUfo
         {
             var sb = new StringBuilder();
             const string ladder = "450;300;200;100;50";
-            const string timing = "1.5,3,0.5,1,2,1";
+            const string repeat = "450";
+            // First delay 1.5–3 s, window 0.4 s, re-spike gap 1.5–3 s (the same span, so a
+            // re-presentation is as unpredictable as the first), one forgiven early press.
+            const string timing = "1.5,3,0.4,1.5,3,1";
             const string points = "100,-10";
-            const string grids  = "5,250,40,5,250,60,1,8,11,0,0.06,4";
+            const string grids  = "5,250,40,5,250,60,1,7,10,0,0.06,4";
             const string stop   = "50,8,5";
 
             sb.AppendLine(
-                "weapon,unityApplicationFps,practiceStuttersMs," +
+                "weapon,unityApplicationFps,practiceStuttersMs,practiceRepeatStuttersMs," +
                 "swSpikeDelayMinSec,swSpikeDelayMaxSec,swWindowSec,swRespikeMinSec,swRespikeMaxSec," +
                 "swMaxEarlyPerRound,maxSpikesPerRound,roundTimeoutSec," +
                 "hitPoints,missPoints," +
@@ -540,12 +608,18 @@ namespace JndUfo
             // (10 looks, then a miss) and leaves the wall clock off, since 10 re-presentations can
             // legitimately run past 20 s. Laser gets both: 10 crossings, or 20 s, whichever first.
             //
-            // Practice sits on the first block of each weapon: they are different tasks with
-            // different responses, so one warm-up cannot serve both, but a second laser block does
-            // not need its own.
-            sb.AppendLine($"shockwave,60,{ladder},{timing},10,0,{points},{grids},0.556,{stop}");
-            sb.AppendLine($"laser,60,{ladder},{timing},10,20,{points},{grids},0.222,{stop}");
-            sb.AppendLine($"laser,500,,{timing},10,20,{points},{grids},0.222,{stop}");
+            // Every row carries BOTH ladders, because the Latin square decides which block of a
+            // weapon comes first and the file no longer knows. The full ladder runs the first time
+            // the session hands out that weapon; the short one runs on its repeat block. See
+            // practiceRepeatStuttersMs.
+            //
+            // Four rows: both weapons at both frame-rate caps, which is the 2x2 the square
+            // counterbalances. Their ORDER here is only the identity of each setting — the order a
+            // participant plays them in comes from Data/LatinSquare.csv.
+            sb.AppendLine($"shockwave,60,{ladder},{repeat},{timing},10,0,{points},{grids},0.462,{stop}");
+            sb.AppendLine($"laser,60,{ladder},{repeat},{timing},10,20,{points},{grids},0.222,{stop}");
+            sb.AppendLine($"laser,500,{ladder},{repeat},{timing},10,20,{points},{grids},0.222,{stop}");
+            sb.AppendLine($"shockwave,500,{ladder},{repeat},{timing},10,0,{points},{grids},0.462,{stop}");
             return sb.ToString();
         }
     }

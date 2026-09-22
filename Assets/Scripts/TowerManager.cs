@@ -124,6 +124,26 @@ namespace JndUfo
                  "camera rather than an absolute world X.")]
         public bool fogFollowsCamera = true;
 
+        [Header("Fog Weapon Tint")]
+        [Tooltip("Give each weapon's blocks their own colour of smoke, so the field the participant " +
+                 "is looking at says which task is running — the same signal the UFO's livery " +
+                 "carries. Off leaves the prefab's own fog colour alone.")]
+        public bool tintFogByWeapon = true;
+
+        [Tooltip("Laser blocks. Cool, to sit with the laser's teal.")]
+        public Color laserFogTint = new Color(0.62f, 0.86f, 0.95f, 1f);
+
+        [Tooltip("Shockwave blocks. Violet, to sit with the cannon's arcs.")]
+        public Color shockwaveFogTint = new Color(0.78f, 0.68f, 0.98f, 1f);
+
+        [Tooltip("How far the tint pulls the fog's own colour, 0-1.\n\n" +
+                 "Deliberately partial, and deliberately a HUE change at matched brightness rather " +
+                 "than a new colour outright. The fog is what hides the tower on a laser block, so " +
+                 "how much light it puts out is part of that block's difficulty — two weapons whose " +
+                 "fog differed in brightness would differ in task difficulty for a reason that has " +
+                 "nothing to do with the condition. Alpha is never touched: fogDensity alone owns it.")]
+        [Range(0f, 1f)] public float fogTintStrength = 0.5f;
+
         [Header("Fog Shockwave")]
         [Tooltip("When true, a shot also punches a lateral shockwave through the ground fog on top of the usual " +
                  "sink/rise: particles near the hit X are blown apart sideways, then drawn back together afterwards. " +
@@ -209,6 +229,11 @@ namespace JndUfo
         GameObject       _fogInstance;
         ParticleSystem[] _fogSystems;
         float            _currentFogAlpha = 1f;
+
+        // Each fog system's own RGB, captured the first time a weapon tint is applied so every
+        // later block tints the prefab's colour rather than the previous block's tint.
+        Color[]          _fogBaseColors;
+        WeaponKind?      _fogTintedFor;
 
         // Fog shockwave — world-space X/Y/Z of the most recent shot, and per-particle tracking
         // of everyone caught in the blast (keyed by particle.randomSeed, which stays constant for
@@ -1058,8 +1083,14 @@ namespace JndUfo
 
         void CacheFogMaterials()
         {
-            _fogSystems = _fogInstance.GetComponentsInChildren<ParticleSystem>(true);
+            _fogSystems    = _fogInstance.GetComponentsInChildren<ParticleSystem>(true);
+            _fogBaseColors = null;
             ConfigureFogBudget();
+
+            // A weapon asked for its tint before the fog existed — Start order between two
+            // components is not guaranteed, and the director pushes the block's livery early.
+            // Re-apply it now rather than let the first block run in the prefab's colour.
+            if (_fogTintedFor.HasValue) ApplyWeaponFog(_fogTintedFor.Value);
         }
 
         /// <summary>
@@ -1140,6 +1171,73 @@ namespace JndUfo
             Debug.Log($"[TowerManager] Fog budget applied — {fogMaxParticles} max particles, " +
                       $"{fogEmissionRate:0.#}/s x {fogLifetime:0.#}s (~{fogEmissionRate * fogLifetime:0} live), " +
                       $"size {fogParticleSize:0.#}u, alpha {fogDensity:0.00}, band {bandWidth:0.#}u wide.");
+        }
+
+        /// <summary>
+        /// Recolours the ground fog for the armed weapon. Called once per block by
+        /// ExperimentDirector, alongside the UFO's livery — see UfoController.ApplyWeaponLook.
+        ///
+        /// Hue at matched brightness, never a change of density: the fog IS the laser task's
+        /// occluder, so its opacity is part of that block's difficulty and belongs to fogDensity
+        /// alone. Only the colour channel moves, and only part-way (fogTintStrength), so the bank
+        /// still reads as smoke rather than as a coloured filter over the screen.
+        ///
+        /// Safe before the fog exists — the systems are cached in Start, and a call that arrives
+        /// first simply records the weapon and is re-applied when ConfigureFogBudget runs.
+        /// </summary>
+        public void ApplyWeaponFog(WeaponKind weapon)
+        {
+            _fogTintedFor = weapon;
+            if (!tintFogByWeapon || _fogSystems == null) return;
+
+            if (_fogBaseColors == null || _fogBaseColors.Length != _fogSystems.Length)
+                CacheFogBaseColors();
+
+            Color tint = weapon == WeaponKind.Shockwave ? shockwaveFogTint : laserFogTint;
+
+            for (int i = 0; i < _fogSystems.Length; i++)
+            {
+                ParticleSystem ps = _fogSystems[i];
+                if (ps == null) continue;
+
+                Color c = Color.Lerp(_fogBaseColors[i], tint, fogTintStrength);
+
+                // Alpha comes from the fade and the density budget, never from either colour. It is
+                // read back off the live system rather than off fogDensity so a fade in progress
+                // survives: the bank's alpha is animated between rounds, and stamping the budget
+                // value here would snap a half-faded bank to full.
+                var main = ps.main;
+                var mode = main.startColor.mode;
+                if (mode == ParticleSystemGradientMode.TwoColors)
+                {
+                    Color lo = main.startColor.colorMin, hi = main.startColor.colorMax;
+                    Color c0 = c; c0.a = lo.a;
+                    Color c1 = c; c1.a = hi.a;
+                    main.startColor = new ParticleSystem.MinMaxGradient(c0, c1);
+                }
+                else if (mode == ParticleSystemGradientMode.Color)
+                {
+                    c.a = main.startColor.color.a;
+                    main.startColor = c;
+                }
+                // Gradient modes bake colour into keys the same way they bake alpha; left alone,
+                // exactly as ApplyFogSystemAlpha leaves them.
+            }
+        }
+
+        void CacheFogBaseColors()
+        {
+            _fogBaseColors = new Color[_fogSystems.Length];
+            for (int i = 0; i < _fogSystems.Length; i++)
+            {
+                ParticleSystem ps = _fogSystems[i];
+                if (ps == null) { _fogBaseColors[i] = Color.white; continue; }
+
+                var main = ps.main;
+                _fogBaseColors[i] = main.startColor.mode == ParticleSystemGradientMode.TwoColors
+                    ? main.startColor.colorMax
+                    : main.startColor.color;
+            }
         }
 
         void PrewarmFog()

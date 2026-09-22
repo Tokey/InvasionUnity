@@ -23,6 +23,25 @@ namespace JndUfo
         public float CloseRadius => closeRadius;
         public float MissPoints => missPoints;
 
+        /// <summary>
+        /// Responses this phase that landed, and responses that did not — the HUD's tally.
+        ///
+        /// Kept here rather than derived from the score, because the score is a weighted number
+        /// (hitPoints against missPoints) and two different tallies can produce the same total.
+        /// Counted per RESPONSE, not per round: a shockwave round that takes an early press and a
+        /// late press before its detection contributes two misses and one hit, which is what the
+        /// participant actually did and what the shot log records.
+        ///
+        /// Practice and the main run are counted separately, because ExperimentDirector calls
+        /// <see cref="ResetScore"/> between them.
+        /// </summary>
+        public int Hits   { get; private set; }
+        public int Misses { get; private set; }
+
+        /// <summary>True for a hit, false for a miss — whichever the last scored response was.
+        /// The HUD uses it to decide which half of the tally to punch.</summary>
+        public bool LastWasHit { get; private set; }
+
         /// <summary>(lastShotScore, totalScore, distance)</summary>
         public event Action<float, float, float> OnScored;
 
@@ -45,11 +64,13 @@ namespace JndUfo
             float dist = Vector3.Distance(a, b);
             LastShotDistance = dist;
 
-            float pts = dist <= closeRadius ? hitPoints : missPoints;
+            bool  hit = dist <= closeRadius;
+            float pts = hit ? hitPoints : missPoints;
 
             LastShotScore = pts;
             TotalScore += pts;
             ShotCount += 1;
+            Tally(hit);
             Debug.Log($"[ScoreManager] dist={dist:0.00} shot={pts:0.00} total={TotalScore:0.00} closeRadius={closeRadius:0.00} missPoints={missPoints:0.00}");
             OnScored?.Invoke(LastShotScore, TotalScore, dist);
             return pts;
@@ -74,9 +95,17 @@ namespace JndUfo
             LastShotScore = pts;
             TotalScore += pts;
             ShotCount += 1;
+            Tally(success);
             Debug.Log($"[ScoreManager] outcome success={success} shot={pts:0.00} total={TotalScore:0.00} (distance not scored)");
             OnScored?.Invoke(LastShotScore, TotalScore, distanceForLog);
             return pts;
+        }
+
+        void Tally(bool hit)
+        {
+            LastWasHit = hit;
+            if (hit) Hits++;
+            else     Misses++;
         }
 
         public void ResetScore()
@@ -85,6 +114,9 @@ namespace JndUfo
             LastShotScore = 0f;
             LastShotDistance = 0f;
             ShotCount = 0;
+            Hits = 0;
+            Misses = 0;
+            LastWasHit = false;
             // Announced like a shot, so the HUD drops to 0 with the reset — otherwise it kept
             // showing the practice score under the main-run prompt until the first main shot.
             OnScored?.Invoke(0f, 0f, 0f);

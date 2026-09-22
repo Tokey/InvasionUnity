@@ -57,9 +57,30 @@ namespace JndUfo
         public bool  isHit;                // landed within closeRadius of the tower base
         public float totalScore;           // running score after this shot
 
-        // ── Shockwave trial timing ──────────────────────────────────────────
-        // Empty / NaN on a laser block, where the stutter is triggered by the participant's own
-        // movement and there is no window to answer it in.
+        // ── The stutter immediately before this response (both weapons) ──────
+        // stutterAtSec above lists every stutter since the previous response; these two single
+        // out the LAST one and time the response against it. On a laser block that is the most
+        // recent tower crossing; on a shockwave block, the most recent presentation. Unlike
+        // spikeAtSec below they are not scoped to the round: a shot that follows no stutter this
+        // round still says how long ago the last one was, and spikesSinceLastShot = 0 says that
+        // it was before the previous response.
+
+        /// <summary>Phase-clock time the most recent stutter of this phase finished, whichever
+        /// round it belonged to. NaN before the phase's first stutter.</summary>
+        public float lastSpikeAtSec;
+
+        /// <summary>firedAtSec − lastSpikeAtSec: how long after the most recent stutter this
+        /// response came. NaN when no shot was fired or no stutter has run yet this phase. On a
+        /// laser block this is the number that says whether the stutter could still have been
+        /// throwing the participant's aim; on a shockwave block it equals reactionSec for a
+        /// detection or a late press, and is also defined for an early press (where reactionSec
+        /// is not).</summary>
+        public float sinceLastSpikeSec;
+
+        // ── Trial timing ────────────────────────────────────────────────────
+        // The window columns are NaN on a laser block, where the stutter is triggered by the
+        // participant's own movement and there is no window to answer it in; the instants are
+        // filled for both weapons.
 
         /// <summary>How the response resolved: <c>shot</c> (laser), <c>detected</c> / <c>early</c> /
         /// <c>late</c> (shockwave presses), or <c>timeout</c> / <c>expired</c> (either weapon, a
@@ -76,20 +97,24 @@ namespace JndUfo
         /// full, and any analysis that reconstructs the staircase must filter on this.</summary>
         public bool countedByStaircase;
 
-        /// <summary>Phase-relative time the trial armed — the instant the delay started counting.</summary>
+        /// <summary>Phase-relative time the round armed — the starting gun the round's stutters
+        /// are timed from (shockwave), or simply when the round opened (laser).</summary>
         public float trialStartSec;
 
         /// <summary>
-        /// Phase-relative time the stutter finished being delivered — when the spike was thrown.
+        /// Phase-relative time the round's most recent stutter finished being delivered — when
+        /// the spike was thrown. Shockwave: the presentation this response answers. Laser: the
+        /// last tower crossing this round.
         ///
         /// Measured at the END of the stutter, not the start: it blocks the main thread, so the
         /// participant cannot have reacted to it until the frame after it completes, and dating it
         /// from the start would credit them with a reaction time shorter than the stimulus itself.
-        /// NaN when no stutter ran this trial, which is exactly the early-fire case.
+        /// NaN when no stutter ran this round yet — a shockwave early press, or a laser shot with
+        /// no crossing behind it (see lastSpikeAtSec for the one before the round).
         /// </summary>
         public float spikeAtSec;
 
-        /// <summary>Phase-relative time the participant fired. NaN on a timeout.</summary>
+        /// <summary>Phase-relative time the participant fired, either weapon. NaN on a timeout.</summary>
         public float firedAtSec;
 
         /// <summary>firedAtSec - spikeAtSec: how long after the stutter the press came. Defined
@@ -98,11 +123,12 @@ namespace JndUfo
         /// stutter earlier in the round: that press answers nothing.</summary>
         public float reactionSec;
 
-        /// <summary>The delay this trial drew for its stutter (s) — the interval the participant
-        /// had to sit through. Randomised per trial, so it cannot be recovered from the config.</summary>
+        /// <summary>Shockwave: the delay that produced the most recent stutter (s) — the interval
+        /// the participant had to sit through. Randomised per presentation, so it cannot be
+        /// recovered from the config. NaN on a laser block.</summary>
         public float spikeDelaySec;
 
-        /// <summary>The response window this trial drew (s). Also randomised per trial.</summary>
+        /// <summary>Shockwave: the response window (s). NaN on a laser block.</summary>
         public float windowSec;
 
         /// <summary>Where the shot actually landed on X.

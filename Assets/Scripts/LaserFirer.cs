@@ -34,6 +34,12 @@ namespace JndUfo
                  "empty; place one by hand to retune the look from the Inspector.")]
         public ShockwaveCannon shockwaveCannon;
 
+        [Header("Sight")]
+        [Tooltip("Draws the armed weapon's idle look on the ship between shots — the laser's " +
+                 "targeting beam or the cannon's charge arc. Auto-created on this object if left " +
+                 "empty; place one by hand to retune the look from the Inspector.")]
+        public WeaponSight sight;
+
         [Header("Input")]
         public bool fireOnLeftClick = true;
         public Key altFireKey = Key.Space;
@@ -48,6 +54,19 @@ namespace JndUfo
         [Min(0.01f)] public float fireFlashDecay  = 0.15f;
 
         public event Action<Vector3, bool> OnShotFired;
+
+        /// <summary>
+        /// Where the pointer glow is in its pulse this frame, 0 at pulseMin and 1 at pulseMax.
+        /// Published so anything else that glows with the weapon — the sight — can breathe on
+        /// the same clock rather than run a second pulse that drifts against this one.
+        /// </summary>
+        public float PointerPulse01 { get; private set; }
+
+        /// <summary>
+        /// The muzzle flash this frame: 1 on the frame a shot fires, decaying to 0 over
+        /// fireFlashDecay exactly as the pointer's own flash does.
+        /// </summary>
+        public float FireFlash01 { get; private set; }
 
         float     _lastFireTime  = -999f;
         float     _cooldown      = 0.25f;
@@ -97,6 +116,12 @@ namespace JndUfo
             // look stays tunable from the Inspector.
             if (shockwaveCannon == null) shockwaveCannon = GetComponent<ShockwaveCannon>();
             if (shockwaveCannon == null) shockwaveCannon = gameObject.AddComponent<ShockwaveCannon>();
+
+            // Same again for the sight, and for the same reason. It lives here, on the muzzle,
+            // so the beam and the charge arc start where the shot does — and so that hiding the
+            // ship between rounds takes them with it (UfoController.SetHidden walks the children).
+            if (sight == null) sight = GetComponent<WeaponSight>();
+            if (sight == null) sight = gameObject.AddComponent<WeaponSight>();
 
             _propBlock     = new MaterialPropertyBlock();
             _beamPropBlock = new MaterialPropertyBlock();
@@ -152,14 +177,19 @@ namespace JndUfo
 
         void AnimatePointer()
         {
-            if (pointerRenderer == null) return;
-
             float phase     = (Mathf.Sin(Time.time * pulseSpeed * Mathf.PI * 2f) + 1f) * 0.5f;
             float pulse     = Mathf.Lerp(pulseMin, pulseMax, phase);
             _flashCurrent   = Mathf.MoveTowards(_flashCurrent, 0f,
                                                   fireFlashIntensity / Mathf.Max(0.001f, fireFlashDecay)
                                                   * Time.deltaTime);
             float intensity = Mathf.Max(pulse, _flashCurrent);
+
+            // Published before the early-out below: the sight breathes on this even when the
+            // scene has no pointer renderer to glow.
+            PointerPulse01 = phase;
+            FireFlash01    = fireFlashIntensity > 0f ? Mathf.Clamp01(_flashCurrent / fireFlashIntensity) : 0f;
+
+            if (pointerRenderer == null) return;
 
             pointerRenderer.GetPropertyBlock(_propBlock);
             _propBlock.SetColor("_EmissionColor", _baseEmission * intensity);
@@ -170,6 +200,11 @@ namespace JndUfo
         {
             _lastFireTime = Time.time;
             _flashCurrent = fireFlashIntensity;
+            // AnimatePointer already ran this frame, so publish the flash now rather than let the
+            // sight see it a frame after the shot beam appears.
+            FireFlash01   = 1f;
+
+            if (sight != null) sight.NotifyFired(Weapon);
 
             if (Weapon == WeaponKind.Shockwave) FireShockwave();
             else                                  FireLaser();

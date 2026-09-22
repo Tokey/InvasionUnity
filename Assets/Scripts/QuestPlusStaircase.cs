@@ -313,6 +313,63 @@ namespace JndUfo
         /// <summary>Standard deviation of the θ posterior (ms) — shrinks as evidence accumulates.</summary>
         public float PosteriorThresholdSD() => PosteriorSD(ThresholdMarginal());
 
+        /// <summary>
+        /// A quantile of the θ posterior (ms), <paramref name="p"/> in 0–1.
+        ///
+        /// Why this exists alongside the SD: the θ posterior is a distribution over a bounded
+        /// grid, and near the ends of that grid it is skewed — the mean ± 2 SD can sit outside
+        /// the grid entirely and is not the interval the posterior actually assigns 95% to.
+        /// Reporting a JND as an interval is the normal thing to do, and an interval taken from
+        /// the SD of a skewed posterior is the wrong one.
+        ///
+        /// Interpolated between grid points rather than snapped to one, so the answer does not
+        /// quantise to the 60-point threshold grid — with stopSD at 5 ms and grid steps around
+        /// 4 ms, snapping would be a visible part of the reported width.
+        ///
+        /// Called once per block, from the session-row write, so the full pass over the grid
+        /// costs nothing that matters.
+        /// </summary>
+        public float ThresholdQuantile(float p)
+        {
+            float[] m = ThresholdMarginal();
+            double target = Mathf.Clamp01(p);
+
+            double cum = 0.0;
+            for (int t = 0; t < _nThresh; t++)
+            {
+                double next = cum + m[t];
+                if (next >= target || t == _nThresh - 1)
+                {
+                    // Where in this cell's probability mass the target falls, mapped onto the
+                    // half-open interval running to the next grid point.
+                    double within = m[t] > 1e-12 ? (target - cum) / m[t] : 0.0;
+                    within = System.Math.Max(0.0, System.Math.Min(1.0, within));
+
+                    float lo = Config.threshGrid[t];
+                    float hi = t + 1 < _nThresh ? Config.threshGrid[t + 1] : lo;
+                    return (float)(lo + within * (hi - lo));
+                }
+                cum = next;
+            }
+            return Config.threshGrid[_nThresh - 1];
+        }
+
+        /// <summary>
+        /// The most probable θ on the grid — the MAP estimate.
+        ///
+        /// Logged beside the mean because the two disagree exactly when the posterior is skewed,
+        /// and that disagreement is the cheapest available signal that a block's estimate is
+        /// pressed against the end of the threshold grid and should not be read at face value.
+        /// </summary>
+        public float ThresholdMode()
+        {
+            float[] m = ThresholdMarginal();
+            int best = 0;
+            for (int t = 1; t < _nThresh; t++)
+                if (m[t] > m[best]) best = t;
+            return Config.threshGrid[best];
+        }
+
         /// <summary>Posterior mean of the Weibull slope β.</summary>
         public float SlopeEstimate()
         {

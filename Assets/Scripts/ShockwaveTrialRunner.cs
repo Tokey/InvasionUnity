@@ -246,13 +246,31 @@ namespace JndUfo
         // Config with the same defaults StudyConfig carries, for a scene with no block loaded.
         float FirstDelayMin  => _config != null ? _config.swSpikeDelayMinSec : 1.5f;
         float FirstDelayMax  => _config != null ? _config.swSpikeDelayMaxSec : 3f;
-        float RespikeMin     => _config != null ? _config.swRespikeMinSec    : 1f;
-        float RespikeMax     => _config != null ? _config.swRespikeMaxSec    : 2f;
-        float WindowSec      => _config != null ? _config.swWindowSec        : 0.5f;
+        float RespikeMin     => _config != null ? _config.swRespikeMinSec    : 1.5f;
+        float RespikeMax     => _config != null ? _config.swRespikeMaxSec    : 3f;
+        float WindowSec      => _config != null ? _config.swWindowSec        : 0.4f;
         float EarlyLockout   => _config != null ? _config.swEarlyLockoutSec  : 1f;
         int   MaxEarly       => _config != null ? _config.swMaxEarlyPerRound : 1;
         int   MaxSpikes      => _config != null ? _config.maxSpikesPerRound  : 10;
+        int   PracticeMisses => _config != null ? _config.practiceMaxMissesPerRound : 3;
         float RoundTimeout   => _config != null ? _config.roundTimeoutSec    : 0f;
+
+        /// <summary>
+        /// The stutter allowance actually in force for the round: the block's maxSpikesPerRound,
+        /// tightened to StudyConfig.practiceMaxMissesPerRound during shockwave PRACTICE. 0 = no
+        /// cap. The debug HUD reads this so its "spikes n/cap" line is honest in practice.
+        /// </summary>
+        public int SpikeCap
+        {
+            get
+            {
+                int cap = MaxSpikes;
+                bool practice = perturbation != null && perturbation.PracticeMode && IsShockwaveBlock;
+                int practiceCap = PracticeMisses;
+                if (!practice || practiceCap <= 0) return cap;
+                return cap > 0 ? Mathf.Min(cap, practiceCap) : practiceCap;
+            }
+        }
 
         void Awake()
         {
@@ -282,7 +300,10 @@ namespace JndUfo
             // clock holds until the gate lifts. The gate lifting is a starting gun, so the next
             // stutter is timed from it with the first-stutter delay rather than the re-spike gap —
             // a participant who has just been counted in should find the wait as unpredictable as
-            // a round's first, not learn that a re-gate means the stutter comes sooner.
+            // a round's first, not learn that a re-gate means the stutter comes sooner. (The
+            // shipped config now draws both from the same 1.5–3 s span, so the two draws are
+            // equally unpredictable either way; the distinction is kept for a config that sets
+            // them apart.)
             if (_phase == Phase.Regating)
             {
                 if (!live) return;
@@ -391,10 +412,17 @@ namespace JndUfo
         /// same stimulus is presented again after a gap; the last one closing unanswered is the
         /// miss. The gap is measured from the window closing, not from the stutter, so a
         /// participant who is merely slow is not handed the next stutter on top of the first.
+        ///
+        /// Every stutter that reaches this point was missed — its window closed with no answer —
+        /// so <see cref="_spikesThisRound"/> here IS the round's miss count. (A late press does not
+        /// add one: it answers a stutter already counted here, and re-gates rather than closing.)
+        /// In practice the allowance is the shorter <see cref="SpikeCap"/>: a round that has shown
+        /// the same obvious stutter three times and got no answer has taught what it can, and the
+        /// ladder moves on rather than presenting it seven more times.
         /// </summary>
         void CloseWindowUnanswered(float now)
         {
-            int cap = MaxSpikes;
+            int cap = SpikeCap;
             if (cap > 0 && _spikesThisRound >= cap) ResolveWithoutShot(ShockwaveOutcome.Timeout);
             else                                    ScheduleRespike(now);
         }
@@ -472,14 +500,20 @@ namespace JndUfo
         /// </summary>
         public TrialVerdict ClassifyPlayerFire()
         {
+            float now = Time.realtimeSinceStartup;
+            _firedAt = now;
+
             if (!IsShockwaveBlock)
             {
+                // A laser shot has no presentation schedule to answer, but it does follow a
+                // stutter: the most recent tower crossing this round, if there was one. Stamped
+                // so the shot log can time the shot against it exactly as it times a shockwave
+                // press against its window — how long after the stutter the participant fired
+                // is what decides whether the stutter could still be throwing their aim.
+                if (RoundSpikes > 0) _spikeAt = perturbation.LastSpikeEndRealtime;
                 StopClock();
                 return TrialVerdict.Of(ShockwaveOutcome.None, endsRound: true, counted: true);
             }
-
-            float now = Time.realtimeSinceStartup;
-            _firedAt = now;
 
             if (_phase == Phase.WindowOpen)
             {

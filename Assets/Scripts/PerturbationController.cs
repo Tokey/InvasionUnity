@@ -280,7 +280,13 @@ namespace JndUfo
             return burst;
         }
 
-        void ResetStutterBurst()
+        /// <summary>
+        /// Forgets the stutters accumulated since the last shot without reporting them. Public
+        /// for ExperimentDirector.BeginPhase, which baselines its own spike count at the same
+        /// moment: the list and the count have to start a phase together, or the phase's first
+        /// row lists stutters its count says never happened.
+        /// </summary>
+        public void ResetStutterBurst()
         {
             _stuttersSinceShot.Clear();
             _stutterEndsSinceShot.Clear();
@@ -741,8 +747,10 @@ namespace JndUfo
             string clock = _config.roundTimeoutSec > 0f
                 ? $"{r.RoundElapsedSec:0}/{_config.roundTimeoutSec:0}s"
                 : $"{r.RoundElapsedSec:0}s";
-            string spikes = _config.maxSpikesPerRound > 0
-                ? $"{r.RoundSpikes}/{_config.maxSpikesPerRound}"
+            // The runner's cap, not the config's: shockwave practice runs a shorter allowance.
+            int cap = r.SpikeCap;
+            string spikes = cap > 0
+                ? $"{r.RoundSpikes}/{cap}"
                 : r.RoundSpikes.ToString();
             return $"\nRound: {clock}   spikes {spikes}";
         }
@@ -751,7 +759,10 @@ namespace JndUfo
         /// second; it is otherwise only rebuilt when a response moves the staircase.</summary>
         public void RefreshDebugText()
         {
-            if (uiManager == null) return;
+            // Nothing below is cheap — several interpolated strings, rebuilt on every response and
+            // once a second while a round runs — and none of it is worth doing for a readout that
+            // is switched off. It is off for every participant session; see UIManager.showDebug.
+            if (uiManager == null || !uiManager.DebugVisible) return;
 
             string mode = testMode switch {
                 TestMode.FrameTimeStutter => "FT",

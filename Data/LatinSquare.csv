@@ -1,0 +1,17 @@
+# Counterbalancing order for Data/ExperimentConfig.csv.
+# One row per session, taken cyclically: session 1 uses row 1, session 4 uses row 4,
+# session 5 is back on row 1.
+# Each cell is a 1-based row number in ExperimentConfig.csv - the order that session plays them in.
+#   1 = shockwave @ 60 fps
+#   2 = laser     @ 60 fps
+#   3 = laser     @ 500 fps
+#   4 = shockwave @ 500 fps
+# Generated as a Williams square: every setting takes every position equally
+# often AND every ordered pair of settings occurs equally often, so neither
+# order nor carry-over between settings is confounded with the setting itself.
+# Edit by hand if you want a different design; it is validated at load.
+row,pos1,pos2,pos3,pos4
+1,1,2,4,3
+2,2,3,1,4
+3,3,4,2,1
+4,4,1,3,2

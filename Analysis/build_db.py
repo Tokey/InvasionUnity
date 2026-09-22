@@ -53,8 +53,15 @@ LOGS = {
 
 # Constant across every row of a (session, block, phase) group, so they are stored
 # once in `block` rather than repeated on every fact row.
+#
+# blockOrdinal / latinRow / latinOrder / weaponRun are the counterbalancing: which
+# position in THIS session's order the block was played at, which row of
+# Data/LatinSquare.csv the session drew, the whole order that produced, and whether
+# this was the participant's first or second block with that weapon. blockIndex stays
+# the key because it identifies the SETTING; these say when it was met.
 BLOCK_KEY = ("sessionId", "blockIndex", "phase")
-BLOCK_ATTRS = ("unityApplicationFps", "testMode", "closeRadius", "weapon", "phaseStartIso")
+BLOCK_ATTRS = ("unityApplicationFps", "testMode", "closeRadius", "weapon", "phaseStartIso",
+               "blockOrdinal", "latinRow", "latinOrder", "weaponRun")
 
 # Written by CsvTable.F for a float.NaN. SQL wants a NULL, not the string "NaN" -
 # otherwise the column infers as TEXT and every numeric comparison silently fails.
@@ -141,6 +148,10 @@ def create_block_table(con, cfg_columns):
             closeRadius         REAL,
             weapon              TEXT,
             phaseStartIso       TEXT,
+            blockOrdinal        INTEGER,
+            latinRow            INTEGER,
+            latinOrder          TEXT,
+            weaponRun           INTEGER,
             sourceFolder        TEXT,
             columnCount         INTEGER,
             {cols + ',' if cols else ''}
@@ -498,7 +509,9 @@ SCHEMA_HELP = """
 Tables
   block        one row per (sessionId, blockIndex, phase). Holds everything constant
                across a row group: cfg_* settings, unityApplicationFps, testMode,
-               closeRadius, phaseStartIso.
+               closeRadius, phaseStartIso, and the counterbalancing - blockOrdinal,
+               latinRow, latinOrder, weaponRun. blockIndex is WHICH setting (its row
+               in ExperimentConfig.csv); blockOrdinal is WHEN in the session it ran.
   session_log  one row per block - the summary metrics
   shot         one row per trial
   frame        one row per rendered frame
@@ -522,6 +535,23 @@ Examples
          ROUND(AVG(st.durationMs) - s.stimulusMs, 2) AS overshootMs
   FROM shot s JOIN stutter st ON st.shot_id = s.shot_id
   GROUP BY s.shot_id ORDER BY s.roundNumber;
+
+  -- threshold by setting AND by the position it was played at, which is what the
+  -- Latin square exists to let you separate
+  SELECT b.weapon, b.unityApplicationFps, b.blockOrdinal,
+         COUNT(*)                       AS blocks,
+         ROUND(AVG(s.jndEstimateMs), 1) AS meanJndMs
+  FROM session_log s JOIN block b ON b.block_id = s.block_id
+  GROUP BY b.weapon, b.unityApplicationFps, b.blockOrdinal
+  ORDER BY b.weapon, b.unityApplicationFps, b.blockOrdinal;
+
+  -- does a shorter warm-up change the threshold? (weaponRun 1 = 5 practice rounds,
+  -- 2 = 1 round)
+  SELECT b.weapon, b.weaponRun, COUNT(*) AS blocks,
+         ROUND(AVG(s.jndEstimateMs), 1) AS meanJndMs,
+         ROUND(AVG(s.sd), 2)            AS meanPosteriorSd
+  FROM session_log s JOIN block b ON b.block_id = s.block_id
+  GROUP BY b.weapon, b.weaponRun;
 
   -- the frame each shot fired on (uses the partial index)
   SELECT roundNumber, timeSinceStartSec, ufoX, shotHitX, towerX

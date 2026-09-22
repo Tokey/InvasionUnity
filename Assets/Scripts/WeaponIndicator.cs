@@ -5,9 +5,10 @@ using UnityEngine.UI;
 namespace JndUfo
 {
     /// <summary>
-    /// A chip at the top of the screen naming the armed weapon, with a moving icon that shows what
+    /// A chip in the top-right corner naming the armed weapon, with a moving icon that shows what
     /// that weapon does: a bolt travelling up a rail for the laser, expanding shock arcs for the
-    /// shockwave cannon.
+    /// shockwave cannon. It shares the top row with the hit/miss tally on the left, leaving the
+    /// middle of the screen — the play area, and where the hit/miss callout lands — clear.
     ///
     /// This is not decoration. The two weapons ask for opposite behaviour — the laser wants the
     /// participant to aim at a hidden tower, the cannon wants them to sit still and then react — and
@@ -31,14 +32,21 @@ namespace JndUfo
     public class WeaponIndicator : MonoBehaviour
     {
         [Header("Placement")]
-        [Tooltip("Sit on the same line as the score readout, so the top of the screen reads as one " +
-                 "row: score on the left, weapon in the middle, round on the right. Uncheck to use " +
-                 "topOffset instead.")]
+        [Tooltip("Sit on the same line as the HUD's hit/miss tally, so the top of the screen reads " +
+                 "as one row: tally on the left, weapon on the right. Uncheck to use topOffset " +
+                 "instead.")]
         public bool alignToScoreText = true;
         [Tooltip("Pixels down from the top of the screen (1920x1080 reference) to the chip's top " +
                  "edge. Used only when alignToScoreText is off, or when there is no score text to " +
                  "align to.")]
         public float topOffset = 20f;
+        [Tooltip("Which side of the screen the chip hangs from. Right, opposite the hit/miss " +
+                 "tally: the two are the only things on the top row and splitting them to the " +
+                 "corners leaves the middle — where the UFO is flown and where the callout lands " +
+                 "— clear. Centre would put the chip straight over the play area.")]
+        public bool anchorRight = true;
+        [Tooltip("Pixels in from the screen edge the chip is anchored to.")]
+        public float sideMargin = 24f;
         [Tooltip("Pixels the chip's top edge must stay below the top of the screen. Centring on a " +
                  "score readout that sits flush with the top edge would otherwise crop it.")]
         [Min(0f)] public float minTopMargin = 8f;
@@ -158,7 +166,8 @@ namespace JndUfo
         void AlignChip()
         {
             var rt = (RectTransform)_root.transform;
-            rt.anchoredPosition = new Vector2(0f, -topOffset);
+            ApplySideAnchor(rt);
+            rt.anchoredPosition = new Vector2(SideOffsetX, -topOffset);
 
             // Stamped even when the alignment below bails out, so a scene with no score text
             // settles on topOffset instead of re-measuring every frame.
@@ -191,8 +200,20 @@ namespace JndUfo
             // The score text sits flush with the top of the screen, so a chip taller than it would
             // centre itself partly off-screen and lose its first line. Slipping a few pixels out of
             // alignment is the lesser evil against being cropped.
-            rt.anchoredPosition = new Vector2(0f, Mathf.Min(y, -minTopMargin));
+            rt.anchoredPosition = new Vector2(SideOffsetX, Mathf.Min(y, -minTopMargin));
         }
+
+        // Anchored and pivoted to whichever edge the chip hangs from, so the plate grows inward
+        // from that edge as its contents change size — pivoting on the far side instead would let
+        // a wider chip slide off the screen.
+        void ApplySideAnchor(RectTransform rt)
+        {
+            float x = anchorRight ? 1f : 0.5f;
+            rt.anchorMin = rt.anchorMax = new Vector2(x, 1f);
+            rt.pivot     = new Vector2(x, 1f);
+        }
+
+        float SideOffsetX => anchorRight ? -sideMargin : 0f;
 
         void OnDestroy()
         {
@@ -362,9 +383,8 @@ namespace JndUfo
             // and neither is a guess that goes stale when the wording changes.
             _root = NewRect("WeaponChip", canvasGo.transform);
             var rt = _root.GetComponent<RectTransform>();
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 1f);
-            rt.pivot     = new Vector2(0.5f, 1f);
-            rt.anchoredPosition = new Vector2(0f, -topOffset);
+            ApplySideAnchor(rt);
+            rt.anchoredPosition = new Vector2(SideOffsetX, -topOffset);
 
             _plate = _root.AddComponent<Image>();
             _plate.color         = new Color(0f, 0f, 0f, 0.38f);
