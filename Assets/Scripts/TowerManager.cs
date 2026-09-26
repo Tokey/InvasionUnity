@@ -188,6 +188,10 @@ namespace JndUfo
         public Color towerLaserColor = new Color(0.2f, 1f, 0.5f, 1f);
         [Tooltip("Width of the beam in world units.")]
         public float towerLaserWidth = 0.06f;
+        [Tooltip("Raise the beam over the tower as the fog clears. Set per block — off for the " +
+                 "shockwave cannon, whose reveal plays ShockwaveAftershock instead (see " +
+                 "PerturbationController.ApplyTaskParams). Also gates the hit-zone lines.")]
+        public bool showTowerBeam = true;
 
         [Header("Hit Zone Visual")]
         [Tooltip("Show the zone boundary lines. Toggled at runtime.")]
@@ -1040,6 +1044,46 @@ namespace JndUfo
                         if (r != null) r.enabled = true;
         }
 
+        /// <summary>
+        /// Copies the world bounds of every renderer in the skyline, the tower's included, into
+        /// <paramref name="into"/> and returns how many were written (at most its length).
+        ///
+        /// Per renderer rather than per building, so a spire or a roof block is its own box and
+        /// the tops traced from these follow the silhouette actually drawn. The tower is in the
+        /// list because it is part of that silhouette — for <see cref="ShockwaveAftershock"/>,
+        /// the only caller, it is one more roof, never a special one.
+        /// </summary>
+        public int CollectSkylineBounds(Bounds[] into)
+        {
+            int n = 0;
+
+            if (_skylineRenderers != null)
+                foreach (var rArr in _skylineRenderers)
+                {
+                    if (rArr == null) continue;
+                    foreach (var r in rArr)
+                    {
+                        if (n >= into.Length) return n;
+                        if (IsDrawnSolid(r)) into[n++] = r.bounds;
+                    }
+                }
+
+            if (tower != null && tower.renderers != null)
+                foreach (var r in tower.renderers)
+                {
+                    if (n >= into.Length) return n;
+                    if (IsDrawnSolid(r)) into[n++] = r.bounds;
+                }
+
+            return n;
+        }
+
+        // Meshes only: a particle or trail renderer in a building prefab has bounds that say
+        // nothing about where its roof is.
+        static bool IsDrawnSolid(Renderer r) =>
+            r != null && r.enabled && r.gameObject.activeInHierarchy &&
+            (r is MeshRenderer || r is SkinnedMeshRenderer);
+
         // ── Visibility helpers ───────────────────────────────────────────────
 
         public void ShowTower()
@@ -1395,6 +1439,10 @@ namespace JndUfo
         void SetTowerLaserAlpha(float alpha)
         {
             if (_towerLaser == null) return;
+
+            // Every path that drives the beam comes through here, so this one line is enough to
+            // keep it down for a whole block — and it still reaches the zone-line reset below.
+            if (!showTowerBeam) alpha = 0f;
 
             // Main laser — bright, full alpha
             Color mc = towerLaserColor;

@@ -654,6 +654,10 @@ namespace JndUfo
                 // being run, and invite them to spend the response window lining up instead of
                 // watching for the stutter.
                 towerManager.showHitZone    = showHitZone && Weapon != WeaponKind.Shockwave;
+                // The beam over the tower is the same kind of cue — it answers "where was it?",
+                // which only an aimed shot asks. The cannon's reveal plays ShockwaveAftershock
+                // in its place (see GameManager.RevealSequence).
+                towerManager.showTowerBeam  = Weapon != WeaponKind.Shockwave;
                 towerManager.hitZoneOpacity = 0.35f;
                 towerManager.RefreshHitZone();
             }

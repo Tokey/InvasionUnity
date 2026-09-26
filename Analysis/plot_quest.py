@@ -18,6 +18,7 @@ Weibull. Drawing them all shows the staircase converging: red curves early, blue
 Written per folder, into <out>/<folder>/ (PDF for typesetting, PNG for slides):
     Fig_curves_<folder>       one psychometric-curve family per block
     Fig_convergence_<folder>  threshold estimate against round number
+    Fig_sd_<folder>           posterior standard deviation against round number
     Fig_parameters_<folder>   slope and lapse against their prior means
     Fig_composite_<folder>    all of the above stacked, for internal review
 And once for the whole run:
@@ -146,6 +147,7 @@ def use_publication_style():
         "legend.columnspacing": 1.2,
 
         "figure.facecolor": "white",
+        "figure.dpi": 200,
         "savefig.facecolor": "white",
         "savefig.bbox": "tight",
         "savefig.pad_inches": 0.02,
@@ -292,9 +294,14 @@ def cfg_value(df, column, fallback=None):
         return fallback
 
 
-def block_label(block):
+def block_label(block, block_index=None):
     fps = int(block["unityApplicationFps"].iloc[0]) if "unityApplicationFps" in block else 0
-    return f"{fps} FPS" if fps > 0 else "uncapped"
+    fps_str = f"{fps} FPS" if fps > 0 else "uncapped"
+    if "weapon" in block and pd.notna(block["weapon"].iloc[0]):
+        return f"{block['weapon'].iloc[0]} ({fps_str})"
+    elif block_index is not None:
+        return f"Block {int(block_index)} ({fps_str})"
+    return fps_str
 
 
 # ---------------------------------------------------------------- panels
@@ -338,8 +345,8 @@ def draw_family(ax, block, gamma, x_max, cmap, show_title=True):
                 bbox=LABEL_BOX)
 
     if show_title:
-        ax.set_title(f"Block {int(block.blockIndex.iloc[0])} \u2014 "
-                     f"{block_label(block)}, {n} trials", fontweight="bold", pad=5)
+        title = f"{block_label(block, block.blockIndex.iloc[0])}, {n} trials"
+        ax.set_title(title, fontweight="bold", pad=5)
     ax.set_xlabel("Stutter size (ms)")
     ax.set_ylabel("P(hit)")
     ax.set_xlim(0, x_max)
@@ -348,7 +355,7 @@ def draw_family(ax, block, gamma, x_max, cmap, show_title=True):
 
 def draw_param(ax, df, column, ylabel, *, band=False, prior=None,
                prior_fmt="{:.3f}", prior_loc="right", legend=False,
-               legend_loc="inside", xlabel="Round number"):
+               legend_loc="inside", xlabel="Round number", restart_rounds=False):
     """One posterior parameter against round number, one line per block.
 
     Main-phase only regardless of --practice: practice rows all carry the identical
@@ -361,6 +368,8 @@ def draw_param(ax, df, column, ylabel, *, band=False, prior=None,
     for i, (block_index, block) in enumerate(main_rows(df).groupby("blockIndex", sort=True)):
         color = BLOCK_COLORS[i % len(BLOCK_COLORS)]
         rounds = block["roundNumber"].to_numpy()
+        if restart_rounds:
+            rounds = np.arange(1, len(rounds) + 1)
         value = block[column].to_numpy()
 
         if band:
@@ -369,7 +378,7 @@ def draw_param(ax, df, column, ylabel, *, band=False, prior=None,
                             color=color, alpha=0.14, linewidth=0)
 
         ax.plot(rounds, value, color=color, linewidth=1.2, zorder=3,
-                label=f"Block {int(block_index)} ({block_label(block)})")
+                label=block_label(block, block_index))
 
         # Hollow markers for misses: shape carries the outcome, so it survives
         # greyscale printing and colour-vision deficiency without relying on hue.
@@ -378,7 +387,7 @@ def draw_param(ax, df, column, ylabel, *, band=False, prior=None,
         ax.plot(rounds[~hit], value[~hit], "o", markerfacecolor="white", markersize=3.4,
                 markeredgecolor=color, markeredgewidth=0.9, zorder=4)
 
-        if i > 0:   # where the staircase restarts from scratch
+        if i > 0 and not restart_rounds:   # where the staircase restarts from scratch
             ax.axvline(rounds[0] - 0.5, color=RULE, linestyle="--", linewidth=0.7)
 
     if prior is not None:
@@ -487,6 +496,86 @@ def fig_convergence(df, label, titles):
     return fig
 
 
+def fig_sd(df, label, titles):
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL, 2.9))
+    draw_param(ax, df, "sd", "Posterior SD (ms)",
+               band=False, legend=True,
+               xlabel="Round number (continuous across blocks)")
+               
+    # Draw target lines at 5 and 6
+    ax.axhline(5, color="#888888", linestyle=":", linewidth=1, zorder=1)
+    ax.axhline(6, color="#888888", linestyle="--", linewidth=1, zorder=1)
+    
+    # Text labels for the lines
+    ax.annotate("5 ms", xy=(0, 5), xytext=(2, -2), textcoords="offset points", 
+                fontsize=7, color="#666666", va="top")
+    ax.annotate("6 ms target", xy=(0, 6), xytext=(2, 2), textcoords="offset points", 
+                fontsize=7, color="#666666", va="bottom")
+
+    # Mark where the round would have ended for various SD targets
+    for i, (block_index, block) in enumerate(main_rows(df).groupby("blockIndex", sort=True)):
+        color = BLOCK_COLORS[i % len(BLOCK_COLORS)]
+        for j, target_sd in enumerate([10, 9, 8, 7, 6]):
+            converged = block[block["sd"] <= target_sd]
+            if not converged.empty:
+                first = converged.iloc[0]
+                rnd = first.roundNumber
+                val = first.sd
+                ax.plot(rnd, val, marker="*", color=color, markersize=7, zorder=5)
+                
+                y_offset = 15 + j * 13
+                ax.annotate(f"R{rnd} (SD {target_sd})", xy=(rnd, val), xytext=(0, y_offset), 
+                            textcoords="offset points", color=color, fontsize=7.0, fontweight="bold", ha="center",
+                            arrowprops=dict(arrowstyle="-", color=color, alpha=0.5, shrinkB=3))
+
+    if titles:
+        fig.suptitle(f"{label} — posterior SD by trial", fontweight="bold")
+    stamp(fig, label)
+    return fig
+
+
+def fig_sd_overlay(df, label, titles):
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL, 2.9))
+    draw_param(ax, df, "sd", "Posterior SD (ms)",
+               band=False, legend=True,
+               xlabel="Round number (restarted per block)", restart_rounds=True)
+               
+    # Draw target lines at 5 and 6
+    ax.axhline(5, color="#888888", linestyle=":", linewidth=1, zorder=1)
+    ax.axhline(6, color="#888888", linestyle="--", linewidth=1, zorder=1)
+    
+    # Text labels for the lines
+    ax.annotate("5 ms", xy=(0, 5), xytext=(2, -2), textcoords="offset points", 
+                fontsize=7, color="#666666", va="top")
+    ax.annotate("6 ms target", xy=(0, 6), xytext=(2, 2), textcoords="offset points", 
+                fontsize=7, color="#666666", va="bottom")
+
+    # Mark where the round would have ended for various SD targets
+    for i, (block_index, block) in enumerate(main_rows(df).groupby("blockIndex", sort=True)):
+        color = BLOCK_COLORS[i % len(BLOCK_COLORS)]
+        for j, target_sd in enumerate([10, 9, 8, 7, 6]):
+            converged = block[block["sd"] <= target_sd]
+            if not converged.empty:
+                first = converged.iloc[0]
+                idx = np.where(block.index == first.name)[0][0] + 1
+                val = first.sd
+                ax.plot(idx, val, marker="*", color=color, markersize=7, zorder=5)
+                
+                # Place texts in a fixed grid in the empty middle-right area to prevent overlap
+                x_pos = 0.35 + (i * 0.16)
+                y_pos = 0.20 + (j * 0.08)
+                
+                wep = str(block["weapon"].iloc[0]) if "weapon" in block and pd.notna(block["weapon"].iloc[0]) else f"B{int(block_index)}"
+                ax.annotate(f"{wep}\nR{idx} (SD {target_sd})", xy=(idx, val), xytext=(x_pos, y_pos), 
+                            textcoords="axes fraction", color=color, fontsize=7.0, fontweight="bold", ha="center",
+                            arrowprops=dict(arrowstyle="-", color=color, alpha=0.4, shrinkB=3))
+
+    if titles:
+        fig.suptitle(f"{label} — posterior SD by trial (overlapping blocks)", fontweight="bold")
+    stamp(fig, label)
+    return fig
+
+
 def fig_parameters(df, label, titles):
     # Legends on both panels: as a standalone figure this one carries no other key, so
     # without them the two block colours and the dashed prior are unexplained.
@@ -537,6 +626,8 @@ def fig_composite(df, gamma, label, titles):
 BUILDERS = {
     "curves":      lambda df, g, lb, t: fig_curves(df, g, lb, t),
     "convergence": lambda df, g, lb, t: fig_convergence(df, lb, t),
+    "sd":          lambda df, g, lb, t: fig_sd(df, lb, t),
+    "sd_overlay":  lambda df, g, lb, t: fig_sd_overlay(df, lb, t),
     "parameters":  lambda df, g, lb, t: fig_parameters(df, lb, t),
     "composite":   lambda df, g, lb, t: fig_composite(df, g, lb, t),
 }
@@ -584,7 +675,8 @@ def summarise(df, path, label, session):
 def print_summary(rows):
     for r in rows:
         flag = "" if r["convergedBySD"] in ("", True) else "   [stopped without converging]"
-        print(f"  Block {r['blockIndex']} ({r['fpsCap']}): {r['trials']:3d} trials   "
+        name = r['fpsCap'] if " (" in r['fpsCap'] else f"Block {r['blockIndex']} ({r['fpsCap']})"
+        print(f"  {name}: {r['trials']:3d} trials   "
               f"theta = {r['thresholdMs']:6.2f} +/- {r['sdMs']:.2f} ms   "
               f"beta = {r['slope']:.2f}   lambda = {r['lapse']:.4f}   "
               f"accuracy = {r['accuracyPct']:.0f}%{flag}")
@@ -609,6 +701,10 @@ marker give the final posterior; the dotted line is the guess rate gamma. Final
 estimates: {parts}.
 
 Fig. convergence. Threshold estimate against round number, shaded +/-1 posterior SD.
+Filled markers are hits, hollow markers misses. Dashed vertical rules mark where a
+new block restarts the staircase from the prior.
+
+Fig. sd. Posterior standard deviation of the threshold estimate against round number.
 Filled markers are hits, hollow markers misses. Dashed vertical rules mark where a
 new block restarts the staircase from the prior.
 

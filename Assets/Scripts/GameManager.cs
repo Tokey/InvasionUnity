@@ -30,6 +30,9 @@ namespace JndUfo
         public ShockwaveTrialRunner shockwave;
         [Tooltip("Names the armed weapon at the top of the screen. Auto-created on this object if empty.")]
         public WeaponIndicator weaponIndicator;
+        [Tooltip("The shockwave round's reveal: lightning over the city in place of the tower " +
+                 "beam. Auto-created on this object if empty.")]
+        public ShockwaveAftershock aftershock;
 
         [Header("Reveal Timing")]
         [Tooltip("How long the fog takes to fade out after a shot (seconds).")]
@@ -115,6 +118,11 @@ namespace JndUfo
             // block config about which task is running.
             if (weaponIndicator == null) weaponIndicator = FindAnyObjectByType<WeaponIndicator>();
             if (weaponIndicator == null) weaponIndicator = gameObject.AddComponent<WeaponIndicator>();
+
+            // Built for every session for the same reason as the cannon's own pool: its bolts and
+            // sky glow are made once in its Awake, never on the first shockwave reveal.
+            if (aftershock == null) aftershock = FindAnyObjectByType<ShockwaveAftershock>();
+            if (aftershock == null) aftershock = gameObject.AddComponent<ShockwaveAftershock>();
         }
 
         /// <summary>The block being played hands the participant the shockwave cannon, so trials
@@ -167,7 +175,11 @@ namespace JndUfo
         /// at the UFO's X would quietly re-introduce the "where you were mattered" reading the
         /// weapon exists to remove. The fog shockwave still centres on the same point, since the
         /// bank has to be blown open from somewhere.</param>
-        IEnumerator RevealSequence(Vector3 hitPoint, bool showHitMarker = true)
+        /// <param name="playAftershock">True when the cannon fired this round. A shockwave block
+        /// has no tower beam to raise (TowerManager.showTowerBeam is off for it), so the hold is
+        /// given to <see cref="ShockwaveAftershock"/> instead — the blast's discharge arcing over
+        /// the city. A round that ended with no shot has no blast to follow, and holds quietly.</param>
+        IEnumerator RevealSequence(Vector3 hitPoint, bool showHitMarker = true, bool playAftershock = false)
         {
             // 1. Show hit marker immediately at the shot landing point.
             if (showHitMarker) towerManager.ShowHitMarker(hitPoint);
@@ -176,14 +188,18 @@ namespace JndUfo
             // 2. Fog retreats.
             yield return StartCoroutine(towerManager.FadeFog(0f, fogRetreatDuration));
 
-            // 3. Show tower in real colours (hit marker already visible).
+            // 3. Show tower in real colours (hit marker already visible) — or, for the cannon,
+            //    let the storm take the stage the tower beam would have had.
             towerManager.ShowTower();
+            if (playAftershock && aftershock != null) aftershock.Play(hitDisplayDuration);
 
             // 4. Hold so the player can see where they hit.
             yield return new WaitForSecondsRealtime(hitDisplayDuration);
 
-            // 5. Hide tower and marker before fog returns.
+            // 5. Hide tower and marker before fog returns. The storm has spent itself by now;
+            //    stopping it is the guarantee that nothing of it is left under the veil.
             towerManager.HideTowerAndMarker();
+            if (aftershock != null) aftershock.Stop();
 
             // 6. The reset gate goes up here and stays up until firing is handed back. Two jobs:
             //    it tells the participant not to act yet, and it masks the reset. Everything from
@@ -645,7 +661,8 @@ namespace JndUfo
             {
                 if (_regateCoroutine != null) AbandonRegate();
                 if (_revealCoroutine != null) StopCoroutine(_revealCoroutine);
-                _revealCoroutine = StartCoroutine(RevealSequence(hitPoint, showHitMarker: byAim));
+                _revealCoroutine = StartCoroutine(RevealSequence(hitPoint, showHitMarker: byAim,
+                                                                 playAftershock: isShockwave && playerFired));
             }
         }
     }
