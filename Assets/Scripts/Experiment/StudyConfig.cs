@@ -118,18 +118,18 @@ namespace JndUfo
         public float swRespikeMaxSec    = 3f;
 
         /// <summary>
-        /// Shockwave only: how many presses BEFORE the round's first stutter are forgiven. Each
-        /// one is shown as "too early", penalised on the scoreboard, logged in full and withheld
-        /// from QUEST+ (see <see cref="EarlyFirePolicy"/>), and the round carries on toward its
-        /// stutter. One more than this and the round is forfeited as a counted miss.
+        /// Shockwave only: how many MISCLICKS a round forgives — presses within
+        /// <see cref="swSpikeDelayMinSec"/> of the starting gun, before any stutter could have
+        /// come. Each one is shown as "too early", penalised on the scoreboard, logged in full and
+        /// withheld from QUEST+ (see <see cref="EarlyFirePolicy"/>), and the wait restarts from
+        /// the press. One more than this and the round is forfeited as a counted miss.
         ///
-        /// The cap is not optional. A forgiven press is a free probe: with the window at
-        /// <see cref="swWindowSec"/> and presses allowed every fireCooldown, a participant who
-        /// perceives nothing can press at 2.0 s, 2.5 s, 3.0 s … and is GUARANTEED to land the
-        /// first press after the stutter inside its window — every miss on the way was free.
-        /// Chance level would be 1 and the block would measure nothing. Capping the free presses
-        /// is what makes "fire early and it doesn't count" survivable as a rule. 0 = unlimited,
-        /// which is logged as an error at load for exactly that reason.
+        /// A press AFTER swSpikeDelayMinSec but before the stutter is not a misclick and never
+        /// forgiven: it is a guess, counted as a miss and answered with TRY AGAIN!. That split is
+        /// what keeps forgiveness from inflating chance level — no stutter can land where a
+        /// misclick does, so forgiving one hands a participant who perceives nothing no extra bet
+        /// at the window. This cap no longer enters γ at all; it only stops a round being held
+        /// open by hammering the button through the minimum delay. 0 = unlimited.
         /// </summary>
         public int swMaxEarlyPerRound = 1;
 
@@ -267,14 +267,15 @@ namespace JndUfo
         public readonly float crossingDeadZone = 0.25f;
         public readonly float fireCooldown     = 0.25f;
         /// <summary>
-        /// Shockwave only. After a TOO EARLY press, further presses are swallowed for this long —
+        /// Shockwave only. After a forgiven misclick, further presses are swallowed for this long —
         /// no blast, no callout, no log row — so the cannon cannot be hammered every fireCooldown
-        /// while waiting for the stutter. The lockout ends the instant a stutter is delivered,
-        /// whatever is left of it, so it can never eat a genuine response.
+        /// through the callout. Only while the press would itself be a misclick: once
+        /// <see cref="swSpikeDelayMinSec"/> has passed since the restart, a press is a counted
+        /// guess and is never swallowed, so the lockout can never eat a genuine response or turn
+        /// into a free probe.
         ///
         /// Pinned rather than a CSV column: it is a guard on the participant's behaviour, not a
-        /// condition of the study. It only makes ShockwaveGuessRate's figure more conservative —
-        /// that model lets a blind participant probe every fireCooldown, and this permits fewer.
+        /// condition of the study, and it does not enter ShockwaveGuessRate's figure.
         /// </summary>
         public readonly float swEarlyLockoutSec = 1f;
 
@@ -452,15 +453,17 @@ namespace JndUfo
         ///
         ///   rate = 1     some press time wins every round, so the threshold is unmeasurable
         ///                rather than noisy. Happens when the first-delay spread does not exceed
-        ///                the window, or when early presses are unlimited (see
-        ///                <see cref="swMaxEarlyPerRound"/>).
+        ///                the window.
         ///   rate &gt; γ  chance level is higher than QUEST+ has been told. The posterior credits
         ///                the excess to detection, so the threshold estimate comes out too LOW —
         ///                silently, and on every trial. This is the one that bites, because the
         ///                timing looks perfectly reasonable while it happens.
+        ///   rate &lt; γ  the reverse, milder: QUEST+ discounts real detections as luck and the
+        ///                threshold comes out somewhat HIGH. A warning, since overstating γ is the
+        ///                conservative side to err on.
         ///
-        /// Logged as an error, never silently corrected: which number to move is a study-design
-        /// decision, not a clamp.
+        /// Logged, never silently corrected: which number to move is a study-design decision,
+        /// not a clamp.
         /// </summary>
         public void ValidateShockwaveTiming()
         {
@@ -471,15 +474,6 @@ namespace JndUfo
                                 "arrives at the same instant every round, so it can be answered from " +
                                 "memory. Widen swSpikeDelayMaxSec in Data/ExperimentConfig.csv.");
                 return;
-            }
-
-            if (swMaxEarlyPerRound <= 0)
-            {
-                Debug.LogError("[StudyConfig] swMaxEarlyPerRound is 0 (unlimited). Every press before " +
-                                "the first stutter is then a free probe, and pressing every " +
-                                $"{swWindowSec:0.##}s from {swSpikeDelayMinSec:0.##}s onward lands in the " +
-                                "window with NO perception at all — chance level is 1 and the block " +
-                                "cannot measure a threshold. Set it to 1 or 2 in Data/ExperimentConfig.csv.");
             }
 
             if (!ShockwaveGuessRate.TryCompute(this, out float blind, out _, out _)) return;
@@ -501,20 +495,28 @@ namespace JndUfo
             float declared = Row != null ? CsvTable.GetFloat(Row, "guessRate", blind) : blind;
 
             // A few points of slack — demanding an exact match would fire on rounding.
+            if (declared > blind + 0.03f)
+            {
+                Debug.LogWarning(
+                    $"[StudyConfig] Shockwave chance level is overstated: the best blind press wins " +
+                    $"{blind:P0} of responses, but guessRate says {declared:P0}. QUEST+ will discount " +
+                    $"some real detections as luck and estimate a threshold that is somewhat high. " +
+                    $"Set guessRate to {blind:0.###} in Data/ExperimentConfig.csv.");
+                return;
+            }
             if (blind <= declared + 0.03f) return;
 
-            // The window/spread ratio that would bring the blind rate down to the declared γ,
-            // from γ = 1 − (1 − W/spread)^(forgiven+1) — see ShockwaveGuessRate.
-            int   forgiven = Mathf.Max(1, swMaxEarlyPerRound);
-            float ratioFor = 1f - Mathf.Pow(1f - Mathf.Clamp01(declared), 1f / (forgiven + 1));
+            // Every blind bet is one counted response, so the rate is W/spread plus whatever the
+            // re-spike windows add — see ShockwaveGuessRate. Solved for the spread that gives the
+            // declared γ from the first window alone.
             Debug.LogError(
                 $"[StudyConfig] Shockwave chance level is understated: the best blind press wins " +
-                $"{blind:P0} of rounds with no perception at all, but guessRate says {declared:P0}. " +
+                $"{blind:P0} of responses with no perception at all, but guessRate says {declared:P0}. " +
                 $"QUEST+ will credit the difference to detection and estimate a threshold that is " +
-                $"too low. Either set guessRate to {blind:0.###}, or restore the balance — with " +
-                $"{forgiven} forgiven early press(es) the blind rate is 1 − (1 − window/spread)^" +
-                $"{forgiven + 1}, so a {swWindowSec:0.##}s window needs a " +
-                $"{swWindowSec / Mathf.Max(0.01f, ratioFor):0.##}s first-delay spread for {declared:P0}. " +
+                $"too low. Either set guessRate to {blind:0.###}, or restore the balance — the blind " +
+                $"rate is window/spread when the re-spike gap is at least the spread, so a " +
+                $"{swWindowSec:0.##}s window needs a " +
+                $"{swWindowSec / Mathf.Max(0.01f, declared):0.##}s first-delay spread for {declared:P0}. " +
                 "Edit Data/ExperimentConfig.csv.");
         }
 

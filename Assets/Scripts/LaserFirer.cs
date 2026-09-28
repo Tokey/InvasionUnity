@@ -160,11 +160,12 @@ namespace JndUfo
                           || (Keyboard.current != null && Keyboard.current[altFireKey].wasPressedThisFrame);
             if (!wantsFire || Time.time - _lastFireTime < _cooldown) return;
 
-            // An anticipatory press can be swallowed whole — no blast, no score, no trial — with
-            // the trial it interrupted carrying on toward its stutter: always under
+            // A misclick can be swallowed whole — no blast, no score, no trial — with the trial it
+            // interrupted carrying on toward its stutter: always under
             // EarlyFirePolicy.IgnoreAndContinue, and for a second or so after any TOO EARLY press
-            // (the runner's early lockout). The cooldown is still spent so the press cannot
-            // simply be repeated every frame until the window happens to open.
+            // (the runner's early lockout). Only inside the minimum first delay; past it a press
+            // is a counted guess and always goes through. The cooldown is still spent so the press
+            // cannot simply be repeated every frame.
             if (ShockwaveTrialRunner.Instance != null &&
                 ShockwaveTrialRunner.Instance.ShouldSwallowFire())
             {

@@ -265,8 +265,8 @@ ExperimentConfig.csv or to the session row.
 **SessionLog** — 1 row per *block* (each row of ExperimentConfig.csv is its own QUEST+ run):
 identity/timing, the QUEST+ result (`jndEstimateMs`, `sd`, `slopeEstimate`, `lapseEstimate`,
 `staircaseTrials`, `endReason` = converged / maxTrials / timeCap / abandoned), performance
-totals, the shockwave outcome counts (`swDetections`, `swEarlyFires`, `swLateFires`,
-`swTimeouts`, `swSwallowedPresses`, `trialsNotCounted`) and reaction-time summary,
+totals, the shockwave outcome counts (`swDetections`, `swEarlyFires`, `swGuesses`,
+`swLateFires`, `swTimeouts`, `swSwallowedPresses`, `trialsNotCounted`) and reaction-time summary,
 miss-distance statistics, movement totals, frame timing, delivered stutters, and the config
 echo. Practice is not summarised here — it never reaches the posterior.
 
@@ -276,14 +276,17 @@ echo. Practice is not summarised here — it never reaches the posterior.
 after TOO EARLY, or `IgnoreAndContinue`), and the stutters themselves as parallel lists
 `stuttersMs` / `stutterAtSec` (measured size and phase-clock instant of each, oldest first) with
 their summary — then `isHit`, `totalScore`, the shockwave verdict (`outcome` =
-detected/early/late/timeout/expired, `playerFired`, `countedByStaircase`, `trialStartSec`,
-`spikeAtSec`, `firedAtSec`, `reactionSec`, `spikeDelaySec`, `windowSec`), the geometry
+detected/early/guess/late/timeout/expired, `playerFired`, `countedByStaircase`, `trialStartSec`,
+`spikeAtSec`, `firedAtSec`, `sinceGunSec`, `reactionSec`, `spikeDelaySec`, `windowSec`), the geometry
 (`hitX`, `missDistX`, `towerX`, `ufoY`, `side`), and the QUEST+ posterior *after* that response
 (`threshEstimateMs`, `sd`, `slopeEstimate`, `lapseEstimate`) — so the convergence trace is
 recoverable trial by trial. A shockwave round that took an early press and a late press before
 its detection is three rows sharing a `roundNumber`; only the last has `roundEnded` set, and
 `countedByStaircase` says which of them QUEST+ heard (early presses under the default
-`DiscardAndRetry` policy: never; practice rows: never).
+`DiscardAndRetry` policy: never; guesses: always; practice rows: never). `early` is a misclick
+inside `swSpikeDelayMinSec` of the starting gun; `guess` is a press past it but before the
+stutter — a counted miss followed by TRY AGAIN!. The participant sees TOO EARLY for both;
+`sinceGunSec` is the number the split was made on.
 
 **PlayerLog** — 1 row per rendered frame: `phase`, `roundNumber`, `frameIndex`, timings, raw
 mouse position and delta, UFO and tower X, `side`, button states, `shotFired`, `stimulusMs`,
@@ -298,7 +301,8 @@ because everything sits on the same fixedZ plane.
 ### Checking a session's logs
 `python Analysis/audit_logs.py` audits the newest session (or `audit_logs.py 52`, or `--all`):
 every row parses to the header's column count, the ShotLog's internal invariants hold (early
-presses have no stutter behind them and no reaction time, detections react inside their
+presses and guesses have no stutter behind them and no reaction time, and fall on the right
+side of `swSpikeDelayMinSec`, detections react inside their
 window, timeouts have no landing point, practice is never counted, rounds and attempts number
 correctly), and the two files agree — stutters and shots counted in ShotLog match the
 `spikeFired` / `shotFired` frames in PlayerLog, and each shot's frame carries the shot's

@@ -315,6 +315,7 @@ public class UIManager : MonoBehaviour
         Color flashColor = outcome switch
         {
             ShockwaveOutcome.Early => tallyEarlyColor,
+            ShockwaveOutcome.Guess => tallyEarlyColor,
             ShockwaveOutcome.Late  => tallyLateColor,
             _                      => tallyMissColor
         };
@@ -326,6 +327,7 @@ public class UIManager : MonoBehaviour
         {
             ShockwaveOutcome.Detected => calloutShockwaveHitText,
             ShockwaveOutcome.Early    => calloutShockwaveEarlyText,
+            ShockwaveOutcome.Guess    => calloutShockwaveEarlyText,
             ShockwaveOutcome.Late     => calloutShockwaveLateText,
             ShockwaveOutcome.Timeout  => calloutTimeoutText,
             _                          => calloutOutOfTimeText,
@@ -335,6 +337,7 @@ public class UIManager : MonoBehaviour
         {
             ShockwaveOutcome.Detected => calloutHitColor,
             ShockwaveOutcome.Early    => tallyEarlyColor,
+            ShockwaveOutcome.Guess    => tallyEarlyColor,
             ShockwaveOutcome.Late     => tallyLateColor,
             _                         => tallyMissColor
         };
@@ -681,6 +684,7 @@ public class UIManager : MonoBehaviour
                 {
                     ShockwaveOutcome.Detected => tallyHitColor,
                     ShockwaveOutcome.Early    => tallyEarlyColor,
+                    ShockwaveOutcome.Guess    => tallyEarlyColor,
                     ShockwaveOutcome.Late     => tallyLateColor,
                     _                         => tallyMissColor
                 };

@@ -62,15 +62,20 @@ namespace JndUfo
         public float LastStimulusMs { get; private set; } = float.NaN;
 
         // ── Timed outcomes ──────────────────────────────────────────────────
-        // Early, late and timeout are counted apart because they are different mistakes: a run
-        // full of early fires means the participant is guessing the rhythm, a run full of late
+        // Early, guess, late and timeout are counted apart because they are different mistakes: a
+        // run full of early fires means the participant cannot sit still, a run full of guesses
+        // means they are guessing the rhythm, a run full of late
         // fires means they are seeing something but slowly, a run full of timeouts means they
         // genuinely could not see the stutter — and "accuracy" alone reads identically for all.
 
         /// <summary>Responses inside the response window. Shockwave only.</summary>
         public int ShockwaveDetections { get; private set; }
-        /// <summary>Presses before the round's first stutter. Shockwave only.</summary>
+        /// <summary>Misclicks — presses inside the minimum first delay, before any stutter could
+        /// have come. Shockwave only.</summary>
         public int ShockwaveEarly      { get; private set; }
+        /// <summary>Guesses — presses past the minimum first delay but before the stutter, each a
+        /// counted miss followed by TRY AGAIN!. Shockwave only.</summary>
+        public int ShockwaveGuesses    { get; private set; }
         /// <summary>Presses after the window had closed. Shockwave only.</summary>
         public int ShockwaveLate       { get; private set; }
         /// <summary>Rounds that ran out with no shot — stutter allowance spent or wall clock
@@ -187,6 +192,7 @@ namespace JndUfo
             {
                 case "detected": ShockwaveDetections++; break;
                 case "early":    ShockwaveEarly++;      break;
+                case "guess":    ShockwaveGuesses++;    break;
                 case "late":     ShockwaveLate++;       break;
                 case "timeout":
                 case "expired":  ShockwaveTimeouts++;   break;

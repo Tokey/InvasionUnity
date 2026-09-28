@@ -1030,6 +1030,7 @@ namespace JndUfo
                 trialStartSec      = ToPhaseClock(trial.trialArmedAt),
                 spikeAtSec         = ToPhaseClock(trial.spikeAt),
                 firedAtSec         = firedAt,
+                sinceGunSec        = trial.sinceGunSec,
                 reactionSec        = answersStutter ? trial.firedAt - trial.spikeAt : float.NaN,
                 spikeDelaySec      = trial.delaySec,
                 windowSec          = trial.windowSec,
@@ -1064,6 +1065,7 @@ namespace JndUfo
         {
             ShockwaveOutcome.Detected => "detected",
             ShockwaveOutcome.Early    => "early",
+            ShockwaveOutcome.Guess    => "guess",
             ShockwaveOutcome.Late     => "late",
             ShockwaveOutcome.Timeout  => "timeout",
             ShockwaveOutcome.Expired  => "expired",

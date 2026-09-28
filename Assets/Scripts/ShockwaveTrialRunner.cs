@@ -9,7 +9,9 @@ namespace JndUfo
         None,
         /// <summary>Fired inside the response window: the stutter was noticed.</summary>
         Detected,
-        /// <summary>Fired before the round's first stutter, so there was nothing to notice yet.</summary>
+        /// <summary>Fired before the earliest moment the stutter could have arrived
+        /// (swSpikeDelayMinSec after the starting gun) — a misclick, with nothing that could have
+        /// been noticed yet. Handled by <see cref="EarlyFirePolicy"/>.</summary>
         Early,
         /// <summary>Fired after the window had closed: the stutter went unnoticed, and the
         /// participant answered something else.</summary>
@@ -19,22 +21,31 @@ namespace JndUfo
         Timeout,
         /// <summary>The round's wall clock ran out with no shot fired.</summary>
         Expired,
+        /// <summary>Fired after the stutter could have arrived but before it did — a bet that it
+        /// had come. A counted miss under every policy, answered with TRY AGAIN! like a late
+        /// press. The participant sees the same TOO EARLY callout as <see cref="Early"/>; only the
+        /// log tells the two apart. Last in the enum so no existing value is renumbered.</summary>
+        Guess,
     }
 
     /// <summary>
-    /// What an anticipatory press — one made before the round's first stutter — is worth to
-    /// QUEST+.
+    /// What a misclick — a press before the stutter could possibly have arrived, i.e. within
+    /// swSpikeDelayMinSec of the starting gun — is worth to QUEST+.
     ///
     /// This is a real study-design choice rather than a tuning knob, which is why it sits in the
-    /// Inspector on PerturbationController rather than in the CSV: an early press is evidence
-    /// about impatience, and whether that should be allowed to move a perceptual posterior is a
+    /// Inspector on PerturbationController rather than in the CSV: a misclick is evidence about
+    /// impatience, and whether that should be allowed to move a perceptual posterior is a
     /// judgement call about the participant population, not a per-block condition.
     ///
-    /// Whatever the policy, the round carries on toward its stutter: the press is shown as too
-    /// early and the first-stutter delay is redrawn from it. The policy only decides what the
-    /// posterior hears. It is also bounded — StudyConfig.swMaxEarlyPerRound presses are forgiven
-    /// and one more forfeits the round as a counted miss under every policy, because unlimited
-    /// free presses are unlimited free re-rolls of the trial (see ShockwaveGuessRate).
+    /// Under every policy but IgnoreAndContinue the round restarts its wait: the press is shown
+    /// as too early and the first-stutter delay is redrawn from it. Because no stutter can land
+    /// inside that span, the restart hands a participant who perceives nothing no second chance
+    /// at the window — which is what lets the misclick be forgiven without inflating γ. The
+    /// forgiven misclicks are still capped by StudyConfig.swMaxEarlyPerRound (one more forfeits
+    /// the round as a counted miss), so a participant cannot hold a round open by hammering.
+    ///
+    /// A press AFTER swSpikeDelayMinSec but before the stutter is not a misclick and no policy
+    /// applies to it: it is a <see cref="ShockwaveOutcome.Guess"/>, always counted.
     /// </summary>
     public enum EarlyFirePolicy
     {
@@ -49,9 +60,10 @@ namespace JndUfo
         /// countedByStaircase = false, so nothing about it is hidden.</summary>
         DiscardAndRetry,
 
-        /// <summary>The press is swallowed entirely: no shot, no penalty, no log row, and the
+        /// <summary>The misclick is swallowed entirely: no shot, no penalty, no log row, and the
         /// stutter arrives on its original schedule. Useful while piloting or during practice,
-        /// where the participant is still learning that they have to wait.</summary>
+        /// where the participant is still learning that they have to wait. Only misclicks — a
+        /// press after swSpikeDelayMinSec is a counted guess under this policy too.</summary>
         IgnoreAndContinue,
     }
 
@@ -123,6 +135,14 @@ namespace JndUfo
         /// <summary>The response window (s). NaN outside shockwave.</summary>
         public float windowSec;
 
+        /// <summary>Shockwave: seconds from the starting gun this press was measured against —
+        /// the round's own, a TRY AGAIN! lifting, or a forgiven misclick's restart — to the press.
+        /// The number the misclick/guess split is made on: below swSpikeDelayMinSec an early press
+        /// is <see cref="ShockwaveOutcome.Early"/>, at or above it
+        /// <see cref="ShockwaveOutcome.Guess"/>. A duration, so not rebased. NaN on a laser block
+        /// and for a round that ended with no press.</summary>
+        public float sinceGunSec;
+
         /// <summary>Presses swallowed since the previous response — inside the early lockout or
         /// under <see cref="EarlyFirePolicy.IgnoreAndContinue"/>. They produced no shot and no row
         /// of their own, so this is the only place they are counted; the frame log still shows
@@ -137,6 +157,9 @@ namespace JndUfo
     /// A press that lands after the window has closed is a miss too, but one the participant
     /// made rather than one that happened to them: the clock holds while they are counted back in
     /// (TRY AGAIN!) and the next stutter is timed from that starting gun like a round's first.
+    /// A press before the stutter goes one of two ways on the minimum first delay: inside it the
+    /// stutter cannot have come yet, so it is a forgiven misclick; past it, it is a guess that
+    /// the stutter had come — a counted miss, answered with TRY AGAIN! exactly like a late one.
     /// For the laser task the stutter is the participant's own doing (a tower crossing), so the
     /// clock is only a watchdog: too many crossings or too long with no shot closes the round.
     ///
@@ -195,6 +218,9 @@ namespace JndUfo
         int   _earlyThisRound;       // shockwave: forgiven anticipatory presses so far this round
         bool  _gapAnswered;          // shockwave: a counted late press has already been made since the last stutter
         float _earlyLockoutUntil;    // shockwave: presses before this realtime are swallowed (set by an early press, cleared by a stutter)
+        float _gunAt;                // shockwave: the starting gun the pending first-stutter draw is timed from
+        float _earliestSpikeAt;      // shockwave: _gunAt + the minimum first delay — before it a press is a misclick, after it a guess
+        float _firedSinceGun = float.NaN;   // shockwave: the last press, measured from the gun it was made against
 
         // Time the round has spent behind a re-gate, where the participant could not act. Kept
         // apart from _armedAt rather than folded into it: _armedAt is the round's start in the
@@ -372,6 +398,7 @@ namespace JndUfo
             _windowSec              = WindowSec;
             _spikeAt                = float.NaN;
             _firedAt                = float.NaN;
+            _firedSinceGun          = float.NaN;
             _deliveredDelaySec      = float.NaN;
             _spikeCountAtRoundStart = perturbation != null ? perturbation.SpikeCount : 0;
             _spikesThisRound        = 0;
@@ -386,8 +413,13 @@ namespace JndUfo
             else                  _phase = Phase.LaserWatch;
         }
 
+        // Every starting gun comes through here — the round arming, a TRY AGAIN! lifting, and a
+        // forgiven misclick restarting the wait — so this is the one place the misclick/guess
+        // boundary needs setting.
         void ScheduleFirstSpike(float from)
         {
+            _gunAt           = from;
+            _earliestSpikeAt = from + FirstDelayMin;
             _pendingDelaySec = Random.Range(FirstDelayMin, FirstDelayMax);
             _nextSpikeAt     = from + _pendingDelaySec;
             _phase           = Phase.WaitingForSpike;
@@ -464,21 +496,26 @@ namespace JndUfo
         /// <summary>
         /// True when this press should be discarded before it ever becomes a shot. Consulted by
         /// <see cref="LaserFirer"/> so a swallowed press produces no blast, no score and no log
-        /// row, and the round carries on toward its stutter. Two cases, both only before the
-        /// first stutter since the starting gun:
+        /// row, and the round carries on toward its stutter. Two cases, both only for a misclick
+        /// — before the earliest moment the stutter could have arrived:
         ///
         ///  • inside the lockout a TOO EARLY press starts (StudyConfig.swEarlyLockoutSec) — the
         ///    press was shown and penalised, and hammering the button through the callout gets
-        ///    nothing, not even another callout. The lockout is dropped the moment a stutter is
-        ///    delivered (see Update), so it can never swallow an answer;
-        ///  • under <see cref="EarlyFirePolicy.IgnoreAndContinue"/>, where every anticipatory
-        ///    press is swallowed.
+        ///    nothing, not even another callout;
+        ///  • under <see cref="EarlyFirePolicy.IgnoreAndContinue"/>, where every misclick is
+        ///    swallowed.
+        ///
+        /// Never past that moment. A swallowed press there would be a free probe: hammer the
+        /// button from the minimum delay on and the first press after the stutter lands in its
+        /// window for nothing. So a guess always becomes a shot and is counted, and the lockout,
+        /// whatever is left of it, can never eat a genuine answer either.
         /// </summary>
         public bool ShouldSwallowFire()
         {
-            if (!IsShockwaveBlock || !BeforeFirstSpike) return false;
+            float now = Time.realtimeSinceStartup;
+            if (!IsShockwaveBlock || !BeforeFirstSpike || now >= _earliestSpikeAt) return false;
 
-            bool lockedOut = Time.realtimeSinceStartup < _earlyLockoutUntil;
+            bool lockedOut = now < _earlyLockoutUntil;
             if (!lockedOut && Policy != EarlyFirePolicy.IgnoreAndContinue) return false;
 
             SwallowedPressesSinceResponse++;
@@ -502,6 +539,8 @@ namespace JndUfo
         {
             float now = Time.realtimeSinceStartup;
             _firedAt = now;
+            // Taken before classifying: a forgiven misclick restarts the gun from this very press.
+            _firedSinceGun = IsShockwaveBlock ? now - _gunAt : float.NaN;
 
             if (!IsShockwaveBlock)
             {
@@ -523,34 +562,36 @@ namespace JndUfo
 
             // A press with no stutter behind it since the last starting gun — the participant
             // fired on the very frame the round opened, say, or jumped a re-gate's GO! — has
-            // nothing to have noticed, so it reads as early rather than as a detection.
-            return _spikesSinceGun == 0 ? ClassifyEarly(now) : ClassifyLate(now);
+            // nothing to have noticed, so it reads as early (or a guess) rather than a detection.
+            if (_spikesSinceGun > 0) return ClassifyLate(now);
+            return now < _earliestSpikeAt ? ClassifyEarly(now) : ClassifyGuess(now);
         }
 
         /// <summary>
-        /// Before the first stutter since the starting gun. Forgiven up to the configured
-        /// allowance: shown, penalised, and the first-stutter delay is redrawn from the press — so
-        /// the stutter is never handed to a participant who has just been told to wait, and
-        /// pressing early teaches nothing about when it will come. One press past the allowance
-        /// forfeits the round as a counted miss, whatever the policy: a forgiven press is a free
-        /// re-roll of the trial, and unlimited re-rolls make the block unmeasurable. The
-        /// allowance is per ROUND, so presses after a re-gate spend the same budget.
+        /// A misclick: before the earliest moment the stutter could have arrived since the
+        /// starting gun. Forgiven up to the configured allowance: shown, penalised, and the
+        /// first-stutter delay is redrawn from the press — so the stutter is never handed to a
+        /// participant who has just been told to wait, and pressing early teaches nothing about
+        /// when it will come. Forgiving it costs γ nothing: no stutter can land in the span a
+        /// misclick falls in, so restarting the wait is the same bet over again, never a second
+        /// one. One press past the allowance forfeits the round as a counted miss, whatever the
+        /// policy — not to protect γ any more, but so a participant cannot hold a round open by
+        /// hammering the button. The allowance is per ROUND, so presses after a re-gate spend the
+        /// same budget.
         ///
-        /// A forgiven press also starts the early lockout (see <see cref="ShouldSwallowFire"/>):
-        /// the redraw already guarantees the stutter will not land inside the callout, and the
-        /// lockout guarantees the participant cannot spend that time firing at nothing.
+        /// A forgiven press also starts the early lockout (see <see cref="ShouldSwallowFire"/>),
+        /// so the participant cannot spend the callout firing at nothing.
         ///
-        /// Not in practice. The forfeit exists to protect the posterior, and practice responses
-        /// never reach it — there the round is a lesson, and a participant still learning to wait
+        /// Not in practice. There the round is a lesson, and a participant still learning to wait
         /// should get the stutter they were promised rather than lose the round for jumping twice.
         /// </summary>
         TrialVerdict ClassifyEarly(float now)
         {
             _earlyThisRound++;
 
-            // The press beat the stutter out of the gate: it was requested this frame but has not
-            // been delivered yet. Dropped rather than allowed to run, or it would land in the
-            // middle of the "too early" callout with its window already ticking.
+            // Cannot happen while the first delay's minimum is its minimum — a stutter is only
+            // requested at or past _earliestSpikeAt — but a queued stutter left running here would
+            // land in the middle of the callout, so drop it anyway.
             if (_phase == Phase.SpikeRequested) perturbation.CancelPendingSpike();
 
             int allowance = MaxEarly;
@@ -564,6 +605,27 @@ namespace JndUfo
             ScheduleFirstSpike(now);
             return TrialVerdict.Of(ShockwaveOutcome.Early, endsRound: false,
                                    counted: Policy == EarlyFirePolicy.CountAsMiss);
+        }
+
+        /// <summary>
+        /// After the stutter could have arrived, before it did: the participant is betting it
+        /// already came. A counted miss under every policy — forgiving it would hand a participant
+        /// who perceives nothing a free second bet at the window, which is what inflated γ — and
+        /// answered the way a late press is: the clock holds, TRY AGAIN! counts them back in, and
+        /// the next stutter is drawn afresh from that gun, so the miss teaches nothing about when
+        /// it would have come.
+        /// </summary>
+        TrialVerdict ClassifyGuess(float now)
+        {
+            // The press beat the stutter out of the gate: it was requested this frame but has not
+            // been delivered yet. Dropped rather than allowed to run, or it would land in the
+            // middle of the callout with its window already ticking.
+            if (_phase == Phase.SpikeRequested) perturbation.CancelPendingSpike();
+
+            _regateStartedAt = now;
+            _phase           = Phase.Regating;
+            return TrialVerdict.Of(ShockwaveOutcome.Guess, endsRound: false, counted: true,
+                                   regate: true);
         }
 
         /// <summary>
@@ -607,6 +669,7 @@ namespace JndUfo
                 firedAt            = verdict.PlayerFired ? _firedAt : float.NaN,
                 delaySec           = _deliveredDelaySec,
                 windowSec          = IsShockwaveBlock ? _windowSec : float.NaN,
+                sinceGunSec        = verdict.PlayerFired ? _firedSinceGun : float.NaN,
                 swallowedPresses   = SwallowedPressesSinceResponse,
             };
             SwallowedPressesSinceResponse = 0;
