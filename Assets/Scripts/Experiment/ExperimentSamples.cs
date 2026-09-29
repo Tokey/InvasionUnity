@@ -83,12 +83,9 @@ namespace JndUfo
         // filled for both weapons.
 
         /// <summary>How the response resolved: <c>shot</c> (laser), <c>detected</c> / <c>early</c> /
-        /// <c>guess</c> / <c>late</c> (shockwave presses), or <c>timeout</c> / <c>expired</c> (either
-        /// weapon, a round that ran out of stutters or of clock with no shot). <c>early</c> is a
-        /// misclick inside the minimum first delay, where no stutter could have come yet;
-        /// <c>guess</c> is a press past it but before the stutter — counted, and followed by TRY
-        /// AGAIN!. The participant sees TOO EARLY for both. The failures are different mistakes,
-        /// so they must not be collapsed in the log the way isHit does.</summary>
+        /// <c>late</c> (shockwave presses), or <c>timeout</c> / <c>expired</c> (either weapon, a
+        /// round that ran out of stutters or of clock with no shot). The failures are different
+        /// mistakes, so they must not be collapsed in the log the way isHit does.</summary>
         public string outcome;
 
         /// <summary>False only for a round that ran out with no shot. Everything positional in
@@ -120,24 +117,22 @@ namespace JndUfo
         /// <summary>Phase-relative time the participant fired, either weapon. NaN on a timeout.</summary>
         public float firedAtSec;
 
-        /// <summary>Shockwave: seconds from the starting gun this press was measured against (the
-        /// round's, a TRY AGAIN! lifting, or a forgiven misclick's restart) to the press — the
-        /// number the early/guess split was made on, against cfg_swSpikeDelayMinSec. NaN on a
-        /// laser block and for a round that ended with no press.</summary>
-        public float sinceGunSec;
-
-        /// <summary>firedAtSec - spikeAtSec: how long after the stutter the press came. Defined
-        /// only where the press answers that stutter — a detection (inside the window) or a late
-        /// press (after it). NaN for early presses, even one made after a TRY AGAIN! with a
-        /// stutter earlier in the round: that press answers nothing.</summary>
+        /// <summary>firedAtSec - spikeAtSec: how long after the stutter the press came, measured
+        /// from the stutter's END. Defined wherever the press answers that stutter, either weapon:
+        /// a shockwave detection (inside the window) or late press (after it), and a laser shot
+        /// with a tower crossing behind it this round, hit or miss. NaN for a laser shot with no
+        /// crossing yet, for timeouts, and for shockwave early presses — even one made after a
+        /// TRY AGAIN! with a stutter earlier in the round: that press answers nothing.</summary>
         public float reactionSec;
 
-        /// <summary>Shockwave: the delay that produced the most recent stutter (s) — the interval
-        /// the participant had to sit through. Randomised per presentation, so it cannot be
-        /// recovered from the config. NaN on a laser block.</summary>
+        /// <summary>The wait that led up to the most recent stutter (s). Shockwave: the delay
+        /// that produced it — randomised per presentation, so it cannot be recovered from the
+        /// config. Laser: from the round's start (first crossing) or the previous crossing's
+        /// stutter ending, to this one starting. NaN when no stutter has run this round.</summary>
         public float spikeDelaySec;
 
-        /// <summary>Shockwave: the response window (s). NaN on a laser block.</summary>
+        /// <summary>Shockwave: the response window (s). NaN on a laser block, which judges a shot
+        /// by aim and has no window.</summary>
         public float windowSec;
 
         /// <summary>Where the shot actually landed on X.

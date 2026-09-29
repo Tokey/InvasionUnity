@@ -965,11 +965,13 @@ namespace JndUfo
                 : default(PerturbationController.StutterBurst);
 
             // A press answers the stutter only if it came after one and before the next — a
-            // detection or a late press. An early press has a spikeAt only because a stutter ran
-            // earlier in the round (before a TRY AGAIN!), and "time since a stutter it was not
-            // answering" is not a reaction time.
+            // shockwave detection or late press, or a laser shot with a tower crossing behind it
+            // this round (its reaction is to that crossing's stutter, hit or miss). A shockwave
+            // early press has a spikeAt only because a stutter ran earlier in the round (before a
+            // TRY AGAIN!), and "time since a stutter it was not answering" is not a reaction time.
             bool answersStutter = trial.outcome == ShockwaveOutcome.Detected ||
-                                  trial.outcome == ShockwaveOutcome.Late;
+                                  trial.outcome == ShockwaveOutcome.Late ||
+                                  (trial.outcome == ShockwaveOutcome.None && !float.IsNaN(trial.spikeAt));
 
             // The most recent stutter of the PHASE, whichever round it was in and whichever
             // weapon threw it — the plain "how long since the last stutter" that both tasks want,
@@ -1030,7 +1032,6 @@ namespace JndUfo
                 trialStartSec      = ToPhaseClock(trial.trialArmedAt),
                 spikeAtSec         = ToPhaseClock(trial.spikeAt),
                 firedAtSec         = firedAt,
-                sinceGunSec        = trial.sinceGunSec,
                 reactionSec        = answersStutter ? trial.firedAt - trial.spikeAt : float.NaN,
                 spikeDelaySec      = trial.delaySec,
                 windowSec          = trial.windowSec,
@@ -1065,7 +1066,6 @@ namespace JndUfo
         {
             ShockwaveOutcome.Detected => "detected",
             ShockwaveOutcome.Early    => "early",
-            ShockwaveOutcome.Guess    => "guess",
             ShockwaveOutcome.Late     => "late",
             ShockwaveOutcome.Timeout  => "timeout",
             ShockwaveOutcome.Expired  => "expired",

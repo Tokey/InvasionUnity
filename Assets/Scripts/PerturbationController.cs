@@ -78,19 +78,17 @@ namespace JndUfo
         public bool spikeUseBusyWait = true;
 
         [Header("Shockwave")]
-        [Tooltip("What a misclick — a press within swSpikeDelayMinSec of the starting gun, before " +
-                 "any stutter could have come — is worth to QUEST+. The round carries on toward " +
-                 "its stutter under every policy; this only decides what the posterior hears.\n\n" +
+        [Tooltip("What an anticipatory press — one made before the round's first stutter — is " +
+                 "worth to QUEST+. The round carries on toward its stutter under every policy; " +
+                 "this only decides what the posterior hears.\n\n" +
                  "CountAsMiss: shown as too early, and the posterior hears 'did not notice'.\n" +
                  "DiscardAndRetry (default): shown as too early and penalised on the scoreboard, " +
-                 "but QUEST+ never hears it — a misclick answered no stutter, so it is not " +
+                 "but QUEST+ never hears it — an early press answered no stutter, so it is not " +
                  "evidence about the threshold.\n" +
                  "IgnoreAndContinue: the press is swallowed entirely — no blast, no penalty, no " +
                  "log row. Useful while piloting.\n\n" +
-                 "Forgiven misclicks are capped by swMaxEarlyPerRound in the CSV; one past the cap " +
+                 "Forgiven presses are capped by swMaxEarlyPerRound in the CSV; one past the cap " +
                  "forfeits the round as a counted miss under every policy.\n\n" +
-                 "A press AFTER swSpikeDelayMinSec but before the stutter is a guess, not a " +
-                 "misclick: counted as a miss and followed by TRY AGAIN! under every policy.\n\n" +
                  "Only affects blocks whose weapon column is 'shockwave'.")]
         public EarlyFirePolicy earlyFirePolicy = EarlyFirePolicy.DiscardAndRetry;
 
@@ -687,10 +685,9 @@ namespace JndUfo
         /// <summary>
         /// As above, but with the option to withhold the response from the posterior.
         ///
-        /// <paramref name="feedStaircase"/> is false for a shockwave misclick — a press inside the
-        /// minimum first delay — under <see cref="EarlyFirePolicy.DiscardAndRetry"/>: no stutter
-        /// could have been delivered, so the press answered nothing and is not evidence about the
-        /// threshold. (A guess past that delay is always fed, as a miss.) The
+        /// <paramref name="feedStaircase"/> is false for a shockwave press made before the round's
+        /// first stutter under <see cref="EarlyFirePolicy.DiscardAndRetry"/>: no stutter had been
+        /// delivered, so the press answered nothing and is not evidence about the threshold. The
         /// stimulus is left untouched, which is what the round's stutter then presents — QUEST+
         /// selects the next stimulus as part of folding in a response, so not folding one in is
         /// exactly what "same trial, still pending" means.

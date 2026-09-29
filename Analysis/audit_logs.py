@@ -10,10 +10,9 @@ Structural: every row of every file parses to exactly the header's column count.
 Semantic, on the ShotLog:
   - spikesSinceLastShot equals the number of entries in stuttersMs (and stutterAtSec, when
     present, has the same count)
-  - an early press or a guess has no stutter since the previous response
-  - a detection has a reactionSec inside its windowSec; early presses and guesses have none
-  - the early/guess split matches sinceGunSec against cfg_swSpikeDelayMinSec (early below it,
-    guess at or above it), and a guess never closes its round
+  - an early press has no stutter since the previous response
+  - a detection has a reactionSec inside its windowSec; early presses have none
+  - any logged reactionSec (either weapon) equals firedAtSec - spikeAtSec
   - timeout/expired rows have playerFired = 0 and no landing point
   - practice rows are never countedByStaircase
   - time never runs backwards within a phase
@@ -91,23 +90,11 @@ def audit(folder):
 
         outcome = s.get("outcome")
         rt, win = num(s.get("reactionSec")), num(s.get("windowSec"))
-        if outcome in ("early", "guess"):
+        if outcome == "early":
             if n_since != 0:
-                bad(f"{tag}: {outcome} press with {n_since} stutter(s) since the previous response")
+                bad(f"{tag}: early press with {n_since} stutter(s) since the previous response")
             if rt is not None:
-                bad(f"{tag}: {outcome} press carries reactionSec={rt}")
-            # Logs from before the split have no sinceGunSec; skip the check there. 1 ms of
-            # slack for the 4-decimal rounding of both cells.
-            gun, dmin = num(s.get("sinceGunSec")), num(s.get("cfg_swSpikeDelayMinSec"))
-            if gun is not None and dmin is not None:
-                if outcome == "early" and gun > dmin + 1e-3:
-                    bad(f"{tag}: early press at sinceGunSec={gun}, past the {dmin}s minimum delay")
-                if outcome == "guess" and gun < dmin - 1e-3:
-                    bad(f"{tag}: guess at sinceGunSec={gun}, inside the {dmin}s minimum delay")
-            if outcome == "guess" and s.get("roundEnded") != "0":
-                bad(f"{tag}: guess closed its round (roundEnded={s.get('roundEnded')})")
-            if outcome == "guess" and s.get("phase") == "main" and s.get("countedByStaircase") != "1":
-                bad(f"{tag}: main-run guess not countedByStaircase")
+                bad(f"{tag}: early press carries reactionSec={rt}")
         elif outcome == "detected":
             if rt is None or win is None or rt < 0 or rt > win:
                 bad(f"{tag}: detected but reactionSec={rt} windowSec={win}")
@@ -116,6 +103,11 @@ def audit(folder):
                 bad(f"{tag}: {outcome} with playerFired={s.get('playerFired')}")
             if s.get("roundEnded") != "1":
                 bad(f"{tag}: {outcome} but roundEnded={s.get('roundEnded')}")
+        # Wherever a reaction time is logged, either weapon, it is firedAt - spikeAt. (Only
+        # checked where present: laser rows recorded before 2026-09-29 leave it blank.)
+        fired, spike = num(s.get("firedAtSec")), num(s.get("spikeAtSec"))
+        if rt is not None and fired is not None and spike is not None and abs(rt - (fired - spike)) > 2e-4:
+            bad(f"{tag}: reactionSec={rt} but firedAtSec - spikeAtSec = {fired - spike:.4f}")
         if s.get("playerFired") == "0" and s.get("hitX", "") != "":
             bad(f"{tag}: no shot but hitX={s.get('hitX')}")
         if s.get("phase") == "practice" and s.get("countedByStaircase") != "0":

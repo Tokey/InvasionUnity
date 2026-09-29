@@ -265,11 +265,15 @@ def main_rows(df):
     return df[df["phase"] == "main"] if "phase" in df.columns else df
 
 
-def guess_rate(df):
-    """Read gamma off the config echo, falling back to the current default."""
+def guess_rate(df, fallback=0.264):
+    """Read gamma off the config echo, falling back to the current default.
+
+    Gamma is per BLOCK, not per session - laser and shockwave rows carry different
+    values - so pass a single block's rows. Given a whole session this returns the
+    first block's gamma, which is only good as a fallback."""
     if "cfg_guessRate" in df.columns and df["cfg_guessRate"].notna().any():
         return float(df["cfg_guessRate"].dropna().iloc[0])
-    return 0.264
+    return fallback
 
 
 def prior_mean(df, lo_col, hi_col, count_col, fallback):
@@ -307,7 +311,12 @@ def block_label(block, block_index=None):
 # ---------------------------------------------------------------- panels
 
 def draw_family(ax, block, gamma, x_max, cmap, show_title=True):
-    """One Weibull per shot, red (first) through to blue (last)."""
+    """One Weibull per shot, red (first) through to blue (last).
+
+    The block's own gamma wins over the one passed in: a session mixes weapons, and
+    each weapon's QUEST+ ran with its own guess rate. The argument is only the
+    fallback for logs recorded before the config echo existed."""
+    gamma = guess_rate(block, fallback=gamma)
     x = np.linspace(0.5, x_max, 400)
     n = len(block)
 

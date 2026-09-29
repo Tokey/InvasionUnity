@@ -18,14 +18,14 @@ number = `blockIndex` in the logs.
 |---|---|
 | Condition | `weapon` (`laser`/`shockwave`), `unityApplicationFps` (0 = uncapped) |
 | Practice | `practiceStuttersMs` — the ladder for the **first** block of this weapon, `;`-separated (5 values); `practiceRepeatStuttersMs` — the ladder for the **repeat** block (1 value) |
-| Shockwave timing | `swSpikeDelayMinSec`, `swSpikeDelayMaxSec` (first stutter this long after the gun; the minimum is also the misclick/guess boundary), `swWindowSec`, `swRespikeMinSec`, `swRespikeMaxSec` (re-presentation this long after an unanswered window closes), `swMaxEarlyPerRound` (forgiven **misclicks** per round — presses inside `swSpikeDelayMinSec`; does not affect γ) |
+| Shockwave timing | `swSpikeDelayMinSec`, `swSpikeDelayMaxSec` (first stutter 1.5–3 s after the gun), `swWindowSec` (0.4 s), `swRespikeMinSec`, `swRespikeMaxSec` (re-presentation 1.5–3 s after an unanswered window closes — the same span as the first delay), `swMaxEarlyPerRound` (1 forgiven early press) |
 | Round bounds | `maxSpikesPerRound`, `roundTimeoutSec` |
 | Scoring | `hitPoints`, `missPoints` (still define `isHit` for the laser, and still logged, even though the HUD now shows a hit/miss tally instead of a score) |
 | QUEST+ stimulus grid | `stimMinMs`, `stimMaxMs`, `stimCount` |
 | QUEST+ θ grid | `threshMinMs`, `threshMaxMs`, `threshCount` |
 | QUEST+ β grid | `slopeMin`, `slopeMax`, `slopeCount` |
 | QUEST+ λ grid | `lapseMin`, `lapseMax`, `lapseCount` |
-| QUEST+ rules | `guessRate` (γ — chance level, per task. Shockwave: `swWindowSec / (swSpikeDelayMaxSec − swSpikeDelayMinSec)`, plus a little when `swRespikeMinSec` is shorter than that spread — `ShockwaveGuessRate` prints the exact figure at startup), `maxTrials`, `minTrials`, `stopSD` |
+| QUEST+ rules | `guessRate` (γ — chance level, per task: 0.222 laser, 0.462 shockwave = 1 − (1 − 0.4/1.5)²), `maxTrials`, `minTrials`, `stopSD` |
 
 Not in the file, pinned in `StudyConfig`: `closeRadius` = 5, `fireCooldown` = 0.25 s,
 `swEarlyLockoutSec` = 1 s, `revealHoldSec` = 1.5 s, `readyBeatSec` = 0.5 s, and
@@ -45,17 +45,17 @@ replaced by a generated one.
 
 ---
 
-## `SessionLog_<id>.csv` — one row per block (71 columns + `cfg_*`)
+## `SessionLog_<id>.csv` — one row per block (69 columns + `cfg_*`)
 
 | Group | Columns |
 |---|---|
-| Identity | `sessionId`, `runId`, `blockIndex` (which setting), `blockOrdinal` (when in this session), `latinRow`, `latinOrder` (e.g. `2;3;1;4`), `weaponRun` (1 = first block of this weapon, 2 = repeat), `unityApplicationFps`, `testMode`, `weapon` |
+| Identity | `sessionId`, `blockIndex` (which setting), `blockOrdinal` (when in this session), `latinRow`, `latinOrder` (e.g. `2;3;1;4`), `weaponRun` (1 = first block of this weapon, 2 = repeat), `unityApplicationFps`, `testMode`, `weapon` |
 | Timing | `startIso`, `endIso`, `sessionDurationSec`, `playDurationSec`, `endReason` (`converged` / `maxTrials` / `timeCap` / `abandoned`) |
 | QUEST+ result | `jndEstimateMs` (posterior **mean** of θ), `sd`, `priorSd`, `jndMedianMs`, `jndModeMs`, `jndCI95LoMs`, `jndCI95HiMs`, `slopeEstimate` (β̂), `lapseEstimate` (λ̂), `staircaseTrials`, `lastStimulusMs` |
 | Performance | `shotsFired`, `shotsHit`, `accuracy`, `score`, `shotsPerMinute`, `avgShotIntervalSec` |
 | Stutters before responses | `shotsBeforeSpike`, `shotsAfterSpike`, `avgSpikesBeforeShot`, `avgSinceLastSpikeSec`, `minSinceLastSpikeSec`, `maxSinceLastSpikeSec` (over responses that fired with a stutter somewhere behind them — both weapons) |
-| Shockwave outcomes | `swDetections`, `swEarlyFires` (misclicks), `swGuesses`, `swLateFires`, `swTimeouts`, `swSwallowedPresses`, `trialsNotCounted` |
-| Reaction times | `avgReactionSec`, `sdReactionSec`, `minReactionSec`, `maxReactionSec` |
+| Shockwave outcomes | `swDetections`, `swEarlyFires`, `swLateFires`, `swTimeouts`, `swSwallowedPresses`, `trialsNotCounted` |
+| Reaction times | `avgReactionSec`, `sdReactionSec`, `minReactionSec`, `maxReactionSec` — over **hits**, either weapon (shockwave detections; laser hits with a crossing behind them) |
 | Miss geometry (world units on X) | `cumMissDistX`, `avgMissDistX`, `cumMissDistXMissesOnly`, `avgMissDistXMissesOnly`, `medianMissDistX`, `sdMissDistX`, `maxMissDistX` |
 | Movement | `totalMousePathPx`, `avgMouseSpeedPxPerSec`, `peakMouseSpeedPxPerSec`, `mouseMovementPerShot`, `totalUfoPathWorld` |
 | Frame timing | `frameCount`, `avgFrameTimeMs`, `p95FrameTimeMs`, `p99FrameTimeMs`, `maxFrameTimeMs`, `avgFpsNoStutter`, `avgFrameTimeMsNoStutter`, `stutterFramesExcluded` |
@@ -66,23 +66,23 @@ posterior sits on a bounded grid and skews near its ends, where mean ± 2·`sd` 
 interval the posterior actually assigns 95% to. Mean far from mode ⇒ the estimate is
 pressed against the grid and should not be read at face value.
 
-## `ShotLog_<id>.csv` — one row per **response** (51 columns + `cfg_*`)
+## `ShotLog_<id>.csv` — one row per **response** (49 columns + `cfg_*`)
 
-Not one row per round: a shockwave round that takes an early press, a guess and a late press
-before its detection writes four rows sharing a `roundNumber`, told apart by
-`attemptInRound`, and only the last has `roundEnded` set.
+Not one row per round: a shockwave round that takes an early press and a late press before
+its detection writes three rows sharing a `roundNumber`, told apart by `attemptInRound`,
+and only the last has `roundEnded` set.
 
 | Group | Columns |
 |---|---|
-| Identity | `sessionId`, `runId`, `blockIndex`, `blockOrdinal`, `latinRow`, `latinOrder`, `weaponRun`, `unityApplicationFps`, `testMode`, `closeRadius`, `weapon` |
+| Identity | `sessionId`, `blockIndex`, `blockOrdinal`, `latinRow`, `latinOrder`, `weaponRun`, `unityApplicationFps`, `testMode`, `closeRadius`, `weapon` |
 | Phase | `phase` (`practice`/`main`), `phaseStartIso` (absolute time = `phaseStartIso + timeSinceStartSec`) |
 | Position in run | `roundNumber`, `attemptInRound`, `roundEnded` |
 | Clock | `timeSinceStartSec`, `timeSinceLastShotSec` |
 | Stimulus | `stimulusMs` (requested), `spikesSinceLastShot`, `spikeIndexInRound`, `swallowedPresses` |
 | Stutters actually delivered since the previous response | `stuttersMs`, `stutterAtSec` (both `;`-separated, oldest first — every stutter between two responses, with when each one landed), `stutterMeanMs`, `stutterSdMs`, `stutterMinMs`, `stutterMaxMs` — measured, so vs `stimulusMs` shows delivery fidelity |
 | The stutter immediately before this response | `lastSpikeAtSec` (phase clock; the most recent stutter of the phase, whichever round), `sinceLastSpikeSec` (`firedAtSec − lastSpikeAtSec`). Both weapons. On the laser this is "how long after the crossing's stutter did they shoot"; on shockwave it is the raw press-after-stutter interval, defined for early presses too |
-| Outcome | `isHit`, `totalScore`, `outcome` (`shot`/`detected`/`early`/`guess`/`late`/`timeout`/`expired`), `playerFired`, `countedByStaircase` |
-| Trial timing | `trialStartSec` (the round's starting gun), `spikeAtSec` (the round's most recent stutter: the presentation answered on shockwave, the last crossing on laser), `firedAtSec` (both weapons), `sinceGunSec` (shockwave: seconds from the starting gun the press was measured against — the round's, a TRY AGAIN! lifting, or a forgiven misclick's restart), `reactionSec` (shockwave detections and late presses only), `spikeDelaySec`, `windowSec` (shockwave only) |
+| Outcome | `isHit`, `totalScore`, `outcome` (`shot`/`detected`/`early`/`late`/`timeout`/`expired`), `playerFired`, `countedByStaircase` |
+| Trial timing | `trialStartSec` (the round's starting gun), `spikeAtSec` (the round's most recent stutter: the presentation answered on shockwave, the last crossing on laser), `firedAtSec` (both weapons), `reactionSec` (`firedAtSec − spikeAtSec`, from the stutter's **end**; both weapons — shockwave detections and late presses, laser shots with a crossing this round, hit or miss; add the last `stuttersMs` entry to time it from the stutter's start), `spikeDelaySec` (the wait before the most recent stutter — shockwave: the random delay; laser: from the round start or previous stutter's end to this crossing's stutter), `windowSec` (shockwave only — laser has no response window) |
 | Geometry | `hitX`, `missDistX`, `towerX`, `ufoY`, `side` |
 | Posterior after this response | `threshEstimateMs`, `sd`, `slopeEstimate`, `lapseEstimate` |
 
@@ -96,15 +96,7 @@ every phase start, so its entries and `spikesSinceLastShot` always agree.
 `countedByStaircase = 1`.** Practice rows and discarded early fires are logged in full but
 never reached the posterior.
 
-**`early` vs `guess`.** Both are presses before the stutter, and the participant sees TOO
-EARLY for both; they split on `sinceGunSec` against `cfg_swSpikeDelayMinSec`. Below it no
-stutter could have come yet, so the press is a misclick — `early`, forgiven under the default
-policy (`countedByStaircase = 0`) and the wait restarts. At or above it the press is a bet
-that the stutter had come — `guess`, always `countedByStaircase = 1` in the main run, a miss,
-and followed by TRY AGAIN! like a late press (`roundEnded = 0`). Logs from before the split
-have no `guess` rows and no `sinceGunSec` column.
-
-## `PlayerLog_<id>.csv` — one row per rendered frame (40 columns + `cfg_*`)
+## `PlayerLog_<id>.csv` — one row per rendered frame (39 columns + `cfg_*`)
 
 | Group | Columns |
 |---|---|

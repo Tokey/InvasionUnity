@@ -62,20 +62,15 @@ namespace JndUfo
         public float LastStimulusMs { get; private set; } = float.NaN;
 
         // ── Timed outcomes ──────────────────────────────────────────────────
-        // Early, guess, late and timeout are counted apart because they are different mistakes: a
-        // run full of early fires means the participant cannot sit still, a run full of guesses
-        // means they are guessing the rhythm, a run full of late
+        // Early, late and timeout are counted apart because they are different mistakes: a run
+        // full of early fires means the participant is guessing the rhythm, a run full of late
         // fires means they are seeing something but slowly, a run full of timeouts means they
         // genuinely could not see the stutter — and "accuracy" alone reads identically for all.
 
         /// <summary>Responses inside the response window. Shockwave only.</summary>
         public int ShockwaveDetections { get; private set; }
-        /// <summary>Misclicks — presses inside the minimum first delay, before any stutter could
-        /// have come. Shockwave only.</summary>
+        /// <summary>Presses before the round's first stutter. Shockwave only.</summary>
         public int ShockwaveEarly      { get; private set; }
-        /// <summary>Guesses — presses past the minimum first delay but before the stutter, each a
-        /// counted miss followed by TRY AGAIN!. Shockwave only.</summary>
-        public int ShockwaveGuesses    { get; private set; }
         /// <summary>Presses after the window had closed. Shockwave only.</summary>
         public int ShockwaveLate       { get; private set; }
         /// <summary>Rounds that ran out with no shot — stutter allowance spent or wall clock
@@ -88,7 +83,7 @@ namespace JndUfo
         /// <summary>Trials that were logged but withheld from the QUEST+ posterior.</summary>
         public int TrialsNotCounted     { get; private set; }
 
-        readonly List<float> _reactionTimes = new List<float>(128);   // detections only
+        readonly List<float> _reactionTimes = new List<float>(128);   // hits only, both weapons
 
         // ── Spikes preceding each response ───────────────────────────────────
         //
@@ -139,9 +134,10 @@ namespace JndUfo
         public float MinSinceLastSpikeSec { get; private set; } = float.NaN;
         public float MaxSinceLastSpikeSec { get; private set; } = float.NaN;
 
-        /// <summary>Mean response time over detections, in seconds. 0 when there are none.</summary>
+        /// <summary>Mean stutter-to-response time over hits, in seconds — shockwave detections and
+        /// laser hits with a crossing behind them. 0 when there are none.</summary>
         public float AvgReactionSec => Mean(_reactionTimes);
-        /// <summary>Fastest response over detections. NaN when there are none.</summary>
+        /// <summary>Fastest response over hits. NaN when there are none.</summary>
         public float MinReactionSec { get; private set; } = float.NaN;
         public float MaxReactionSec { get; private set; } = float.NaN;
         public float SdReactionSec  => StdDev(_reactionTimes);
@@ -192,7 +188,6 @@ namespace JndUfo
             {
                 case "detected": ShockwaveDetections++; break;
                 case "early":    ShockwaveEarly++;      break;
-                case "guess":    ShockwaveGuesses++;    break;
                 case "late":     ShockwaveLate++;       break;
                 case "timeout":
                 case "expired":  ShockwaveTimeouts++;   break;
@@ -200,10 +195,11 @@ namespace JndUfo
             SwallowedPresses += s.swallowedPresses;
             if (!s.countedByStaircase) TrialsNotCounted++;
 
-            // Detections only. A late press also has a reaction time — the row keeps it — but
-            // folding it in here would make "how fast do they answer" read as "how slow were they
-            // when they failed".
-            if (s.outcome == "detected" && !float.IsNaN(s.reactionSec))
+            // Hits only, either weapon: a shockwave detection, or a laser shot that landed with a
+            // crossing behind it. A late press or a laser miss also has a reaction time — the row
+            // keeps it — but folding it in here would make "how fast do they answer" read as "how
+            // slow were they when they failed".
+            if (s.isHit && !float.IsNaN(s.reactionSec))
             {
                 _reactionTimes.Add(s.reactionSec);
                 if (float.IsNaN(MinReactionSec) || s.reactionSec < MinReactionSec) MinReactionSec = s.reactionSec;

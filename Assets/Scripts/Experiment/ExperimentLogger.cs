@@ -184,7 +184,7 @@ namespace JndUfo
                 "shotsBeforeSpike", "shotsAfterSpike", "avgSpikesBeforeShot",
                 "avgSinceLastSpikeSec", "minSinceLastSpikeSec", "maxSinceLastSpikeSec",
                 // shockwave trial outcomes (all zero on a laser block)
-                "swDetections", "swEarlyFires", "swGuesses", "swLateFires", "swTimeouts", "swSwallowedPresses",
+                "swDetections", "swEarlyFires", "swLateFires", "swTimeouts", "swSwallowedPresses",
                 "trialsNotCounted",
                 "avgReactionSec", "sdReactionSec", "minReactionSec", "maxReactionSec",
                 // miss geometry, Unity world units on X
@@ -212,7 +212,7 @@ namespace JndUfo
                 "lastSpikeAtSec", "sinceLastSpikeSec",
                 "isHit", "totalScore",
                 "outcome", "playerFired", "countedByStaircase",
-                "trialStartSec", "spikeAtSec", "firedAtSec", "sinceGunSec", "reactionSec",
+                "trialStartSec", "spikeAtSec", "firedAtSec", "reactionSec",
                 "spikeDelaySec", "windowSec",
                 "hitX", "missDistX", "towerX", "ufoY", "side",
                 "threshEstimateMs", "sd", "slopeEstimate", "lapseEstimate",
@@ -341,7 +341,7 @@ namespace JndUfo
                 CsvTable.F(stats.MaxSinceLastSpikeSec, 4),
 
                 CsvTable.I(stats.ShockwaveDetections), CsvTable.I(stats.ShockwaveEarly),
-                CsvTable.I(stats.ShockwaveGuesses),    CsvTable.I(stats.ShockwaveLate),
+                CsvTable.I(stats.ShockwaveLate),
                 CsvTable.I(stats.ShockwaveTimeouts),   CsvTable.I(stats.SwallowedPresses),
                 CsvTable.I(stats.TrialsNotCounted),
                 CsvTable.F(stats.AvgReactionSec, 4), CsvTable.F(stats.SdReactionSec, 4),
@@ -406,7 +406,7 @@ namespace JndUfo
                          // millisecond resolution rather than the 3 decimals the rest of the row uses.
                          .Cell(s.outcome).Cell(s.playerFired).Cell(s.countedByStaircase)
                          .Cell(s.trialStartSec, 4).Cell(s.spikeAtSec, 4)
-                         .Cell(s.firedAtSec, 4).Cell(s.sinceGunSec, 4).Cell(s.reactionSec, 4)
+                         .Cell(s.firedAtSec, 4).Cell(s.reactionSec, 4)
                          .Cell(s.spikeDelaySec, 4).Cell(s.windowSec, 4)
                          .Cell(s.hitX, 4)
                          .Cell(s.missDistX, 4).Cell(s.towerX, 4).Cell(s.ufoY, 4).Cell(s.side)
