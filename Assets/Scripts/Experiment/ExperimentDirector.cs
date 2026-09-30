@@ -43,8 +43,10 @@ namespace JndUfo
                  "running Analysis/build_db.py by hand.")]
         public bool buildDatabaseOnFinish = true;
 
-        [Tooltip("Python command. 'python' uses whatever is on PATH; an absolute path to " +
-                 "python.exe avoids depending on PATH at all.")]
+        [Tooltip("Python command. An absolute path to python.exe is used as-is. Otherwise a " +
+                 "Windows build first uses the private Python it ships in Python/ beside the " +
+                 ".exe, then falls back to this command on PATH ('python'). The Editor has no " +
+                 "bundled copy, so it always uses PATH.")]
         public string pythonExecutable = "python";
 
         [Tooltip("Script to run, relative to the project root in the Editor or to the folder " +
@@ -776,15 +778,17 @@ namespace JndUfo
             // Never an unbounded wait: the CSVs are the data and the database can be
             // rebuilt by hand, so a slow or wedged import must not strand the session on
             // a "closing" screen.
-            if (dbBuild != null && !dbBuild.HasExited)
+            // PostSessionHook.HasFinished rather than HasExited directly: it cannot throw, and an
+            // exception here would end this coroutine and leave the app on "Saving…" for good.
+            if (!PostSessionHook.HasFinished(dbBuild))
             {
                 overlay.Show("Thank you for participating", "Saving…");
                 float deadline = Time.unscaledTime + databaseWaitSec;
-                while (!dbBuild.HasExited && Time.unscaledTime < deadline)
+                while (!PostSessionHook.HasFinished(dbBuild) && Time.unscaledTime < deadline)
                     yield return null;
 
-                if (dbBuild.HasExited)
-                    Debug.Log($"[PostSessionHook] Database build finished (exit {dbBuild.ExitCode}).");
+                if (PostSessionHook.HasFinished(dbBuild))
+                    Debug.Log($"[PostSessionHook] Database build finished (exit {PostSessionHook.ExitCodeText(dbBuild)}).");
                 else
                     Debug.LogWarning("[PostSessionHook] Database build did not finish within " +
                                      $"{databaseWaitSec:0.#}s; it keeps running after quit, or " +

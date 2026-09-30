@@ -1,0 +1,230 @@
+"""
+How long after a stutter ends does the player fire, on the trials they got right?
+
+    python reaction_after_spike.py "I:/JND - FrameTime Stutter/Data pilot"
+    python reaction_after_spike.py "<data folder>" --practice     # include practice hits
+    python reaction_after_spike.py "<data folder>" --show         # open instead of saving
+
+One figure per session (every folder holding a ShotLog_*.csv), laser and shockwave side by
+side, 60 and 500 fps told apart by colour:
+
+    top row      reaction time (ms) against the trial it happened on
+    bottom row   reaction time (ms) against the size of the stutter it followed
+
+Hits only: shockwave detections, and laser shots that landed with a tower crossing behind them.
+Reaction time is measured from the stutter's END (the frame after the freeze) to the press:
+`reactionSec`, or `firedAtSec - spikeAtSec` where the log leaves reactionSec blank (laser rows
+recorded before 2026-09-29), or - for the oldest logs, which have neither on laser rows - the
+shot's frame time minus the last `stutterAtSec`, good to about a millisecond. The `timing`
+column of reaction_hits.csv says which ("exact" or "frame"). Stutter size is the measured stutter
+the press followed, the last entry of `stuttersMs`.
+
+A laser hit a few ms after the stutter was not a reaction to it: the click landed in the first
+frame after the freeze, so it was made during or just before it - the player was already firing
+at the tower as they crossed it.
+
+Figures go to <data folder>/reaction_figures/, with every hit plotted in reaction_hits.csv.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+import matplotlib
+import numpy as np
+import pandas as pd
+
+# Reference palette (categorical slots 1-3 validate as a set for scatter plots), chart chrome.
+FPS_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]
+SURFACE, INK, INK_2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#898781"
+GRID, AXIS = "#e1e0d9", "#c3c2b7"
+WEAPONS = ["laser", "shockwave"]
+
+
+def num(series):
+    return pd.to_numeric(series, errors="coerce")
+
+
+def last_value(cell, fallback=np.nan):
+    """Last entry of a ';'-separated cell - the most recent stutter since the previous shot."""
+    parts = [p for p in str(cell).split(";") if p.strip() and p.strip().lower() != "nan"]
+    try:
+        return float(parts[-1]) if parts else fallback
+    except ValueError:
+        return fallback
+
+
+def load_hits(path, include_practice):
+    df = pd.read_csv(path)
+    if not include_practice:
+        df = df[df["phase"] == "main"]
+
+    # roundNumber keeps counting across a session's blocks, so number the trials 1, 2, 3 ...
+    # within each block and phase - worked out over every row, misses included, before the
+    # hits are picked out.
+    rounds = num(df["roundNumber"])
+    first = rounds.groupby([df["blockIndex"], df["phase"]]).transform("min")
+    df = df.assign(trial=rounds - first + 1)
+
+    hit = (num(df["isHit"]) == 1) & (num(df["playerFired"]) == 1)
+    df = df[hit].copy()
+    if df.empty:
+        return df
+
+    rt = num(df["reactionSec"])
+    rt = rt.fillna(num(df["firedAtSec"]) - num(df["spikeAtSec"]))
+    # The oldest logs have neither on laser rows. The shot's frame time minus the end of the
+    # last stutter since the previous shot gives the same number to within about a millisecond:
+    # in every log that has both, the frame time sits 0.3-0.6 ms before the press.
+    frame_rt = num(df["timeSinceStartSec"]) - df["stutterAtSec"].map(last_value)
+    df["timing"] = np.where(rt.notna(), "exact", np.where(frame_rt.notna(), "frame", ""))
+    rt = rt.fillna(frame_rt)
+
+    df["reactionMs"] = rt * 1000.0
+    df["stutterMs"] = [last_value(c, s) for c, s in zip(df["stuttersMs"], num(df["stimulusMs"]))]
+    df["fps"] = num(df["unityApplicationFps"]).astype("Int64")
+    df = df[np.isfinite(df["reactionMs"]) & (df["reactionMs"] >= 0)]
+    return df[["phase", "weapon", "fps", "blockIndex", "blockOrdinal", "trial",
+               "stimulusMs", "stutterMs", "reactionMs", "timing"]]
+
+
+def style_axes(ax):
+    ax.set_facecolor(SURFACE)
+    ax.grid(True, color=GRID, linewidth=0.6)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(AXIS)
+    ax.tick_params(colors=INK_2, labelsize=8, length=3, color=AXIS)
+
+
+def plot_session(hits, label, fps_color):
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7.6), sharey=True, facecolor=SURFACE)
+    fig.suptitle(label, x=0.06, ha="left", fontsize=13, fontweight="bold", color=INK)
+    subtitle = "Hits only · time from the end of the stutter to the shot · dashed line = median"
+    approx = sorted(hits.loc[hits["timing"] == "frame", "weapon"].unique())
+    if approx:
+        subtitle += (f"\n{' and '.join(w.capitalize() for w in approx)}: this log has no "
+                     "firedAtSec, so timed from the shot's frame (within ~1 ms)")
+    fig.text(0.06, 0.935, subtitle, ha="left", va="top", fontsize=9, color=INK_2, linespacing=1.5)
+
+    y_max = max(100.0, float(hits["reactionMs"].max()) * 1.08) if not hits.empty else 1000.0
+
+    for col, weapon in enumerate(WEAPONS):
+        w = hits[hits["weapon"] == weapon]
+        top, bottom = axes[0, col], axes[1, col]
+        for ax in (top, bottom):
+            style_axes(ax)
+            ax.set_ylim(0, y_max)
+        top.set_title(weapon.capitalize(), loc="left", fontsize=11, fontweight="bold", color=INK,
+                      pad=20)
+
+        if w.empty:
+            for ax in (top, bottom):
+                ax.text(0.5, 0.5, "No hits", transform=ax.transAxes, ha="center",
+                        va="center", color=MUTED, fontsize=10)
+            continue
+
+        for fps, g in w.groupby("fps", sort=True):
+            color = fps_color[int(fps)]
+            med = g["reactionMs"].median()
+            name = f"{fps} fps  (n={len(g)}, median {med:.0f} ms)"
+            marks = dict(s=30, color=color, edgecolors=SURFACE, linewidths=0.8, zorder=3)
+            top.scatter(g["trial"], g["reactionMs"], label=name, **marks)
+            bottom.scatter(g["stutterMs"], g["reactionMs"], **marks)
+            for ax in (top, bottom):
+                ax.axhline(med, color=color, linewidth=1, linestyle=(0, (4, 3)), zorder=2)
+
+        # On its own line between the weapon name and the plot, so it can never sit on a point.
+        top.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=2, fontsize=8,
+                   frameon=False, labelcolor=INK_2, handletextpad=0.3, columnspacing=1.2,
+                   borderaxespad=0.1, borderpad=0.0)
+
+        # Stutter sizes run from a few ms to a few hundred, clustered near threshold.
+        bottom.set_xscale("log")
+        ticks = [t for t in (1, 2, 5, 10, 20, 50, 100, 200, 500)
+                 if w["stutterMs"].min() / 1.5 <= t <= w["stutterMs"].max() * 1.5]
+        if ticks:
+            bottom.set_xticks(ticks)
+            bottom.set_xticklabels([str(t) for t in ticks])
+        bottom.minorticks_off()
+
+    for col in range(2):
+        axes[0, col].set_xlabel("Trial in the block (1 = first)", fontsize=9, color=INK_2)
+        axes[1, col].set_xlabel("Stutter size (ms, measured; log scale)", fontsize=9, color=INK_2)
+    for row in range(2):
+        axes[row, 0].set_ylabel("Shot after stutter ended (ms)", fontsize=9, color=INK_2)
+
+    # Each extra subtitle line pushes the panels down by one line's height.
+    top = 0.86 - 0.035 * subtitle.count("\n")
+    fig.subplots_adjust(left=0.07, right=0.98, top=top, bottom=0.08, hspace=0.32, wspace=0.08)
+    return fig
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("data", type=Path, help="Folder to search for ShotLog_*.csv (recursively).")
+    ap.add_argument("--out", type=Path, help="Where to write figures. Default: <data>/reaction_figures")
+    ap.add_argument("--practice", action="store_true", help="Include practice-phase hits.")
+    ap.add_argument("--show", action="store_true", help="Open the figures instead of saving them.")
+    args = ap.parse_args()
+
+    if not args.show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    logs = sorted(args.data.rglob("ShotLog_*.csv"))
+    if not logs:
+        sys.exit(f"No ShotLog_*.csv under {args.data}")
+
+    out = args.out or args.data / "reaction_figures"
+    if not args.show:
+        out.mkdir(parents=True, exist_ok=True)
+
+    sessions = [(p, p.parent.name if p.parent != args.data else p.stem) for p in logs]
+    hits_by_session = {}
+    for path, label in sessions:
+        try:
+            hits_by_session[label] = load_hits(path, args.practice)
+        except KeyError as exc:
+            print(f"{label}: skipped - column {exc} missing")
+
+    # Colour follows the frame rate everywhere, so 60 fps is the same blue in every figure.
+    all_fps = sorted({int(f) for h in hits_by_session.values() if not h.empty for f in h["fps"].dropna()})
+    if len(all_fps) > len(FPS_COLORS):
+        sys.exit(f"{len(all_fps)} frame rates found; this script colours at most {len(FPS_COLORS)}.")
+    fps_color = {f: FPS_COLORS[i] for i, f in enumerate(all_fps)}
+
+    rows = []
+    print(f"{'session':28s} {'weapon':10s} {'fps':>4s} {'hits':>5s} {'median ms':>10s} {'mean ms':>8s}")
+    for label, hits in hits_by_session.items():
+        if hits.empty:
+            print(f"{label:28s} no hits")
+            continue
+        for (weapon, fps), g in hits.groupby(["weapon", "fps"], sort=True):
+            print(f"{label:28s} {weapon:10s} {fps:>4} {len(g):5d} "
+                  f"{g['reactionMs'].median():10.0f} {g['reactionMs'].mean():8.0f}")
+        rows.append(hits.assign(session=label))
+
+        fig = plot_session(hits, label, fps_color)
+        if not args.show:
+            target = out / f"ReactionAfterSpike_{label}.png"
+            fig.savefig(target, dpi=200, facecolor=SURFACE)
+            plt.close(fig)
+            print(f"{'':28s} -> {target}")
+
+    if rows and not args.show:
+        table = pd.concat(rows)[["session", "phase", "weapon", "fps", "blockIndex", "blockOrdinal",
+                                 "trial", "stimulusMs", "stutterMs", "reactionMs", "timing"]]
+        table.to_csv(out / "reaction_hits.csv", index=False, float_format="%.2f")
+        print(f"\nAll hits: {out / 'reaction_hits.csv'}")
+
+    if args.show:
+        plt.show()
+
+
+if __name__ == "__main__":
+    main()

@@ -305,6 +305,13 @@ correctly), and the two files agree — stutters and shots counted in ShotLog ma
 `roundNumber`. Exit code 1 on any failure. The CSVs are the data; `Analysis/build_db.py`
 builds a SQLite view of them for convenience and can be rebuilt at any time.
 
+The game runs `build_db.py` itself when a session finishes. A Windows build ships its own
+Python for this (unpacked from `Tools/PythonEmbed/` into `<build>/Python/`), so the lab PC needs
+nothing installed; without it the game falls back to `python` on PATH. Both are optional — if
+neither works, the session runs and logs exactly the same, the end screen just skips "Saving…",
+and `Player.log` says why. Copy the **whole** build folder to the lab PC (`Python/` and
+`Analysis/` included), or the database step has nothing to run.
+
 ### Notes
 - Nothing is written to disk **while a phase is running**. Frame and trial rows are buffered in
   memory and flushed at the phase boundary. A file write on the main thread is itself a

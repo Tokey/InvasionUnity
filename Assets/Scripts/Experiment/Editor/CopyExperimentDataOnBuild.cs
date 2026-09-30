@@ -1,4 +1,6 @@
 using System.IO;
+using System.IO.Compression;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
@@ -22,7 +24,10 @@ namespace JndUfo.EditorTools
     /// counterbalanced to a different design from the other half.
     ///
     /// The post-session database script is copied for the same reason: ExperimentDirector
-    /// resolves it relative to the folder holding the .exe, so it has to be there.
+    /// resolves it relative to the folder holding the .exe, so it has to be there. On Windows
+    /// builds a private Python is unpacked beside it too, so the database gets built on a lab PC
+    /// that has no Python installed — see <see cref="UnpackBundledPython"/>. Both are optional:
+    /// without them the game runs and logs exactly the same, only without the .db.
     ///
     /// Logs are the build's own output, and SessionState.csv is deliberately left alone —
     /// see the note in <see cref="OnPostprocessBuild"/>.
@@ -56,6 +61,9 @@ namespace JndUfo.EditorTools
                             "is NOT the same design if this one was edited by hand.");
 
             CopyAnalysisScript(buildDir);
+
+            if (report.summary.platform == BuildTarget.StandaloneWindows64)
+                UnpackBundledPython(buildDir);
         }
 
         static void CopyConfigFile(string destDir, string fileName, string ifMissing)
@@ -112,6 +120,51 @@ namespace JndUfo.EditorTools
             catch (System.Exception e)
             {
                 Debug.LogWarning($"[Build] Failed to copy {relative} to {dest}: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Unpacks Python's official Windows "embeddable" package from
+        /// <c>Tools/PythonEmbed/python-*-embed-amd64.zip</c> into <c>&lt;build&gt;/Python/</c>,
+        /// where <see cref="PostSessionHook"/> looks first. It is a self-contained runtime (about
+        /// 24 MB unpacked, SQLite included) that nothing has to install, so build_db.py runs on a
+        /// lab PC that never had Python.
+        ///
+        /// Strictly optional, like the script itself: no zip, a bad zip, or a failed copy is a
+        /// warning, never a failed build, and the player falls back to a Python on PATH or simply
+        /// skips the database.
+        /// </summary>
+        static void UnpackBundledPython(string buildDir)
+        {
+            try
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
+                if (projectRoot == null) return;
+
+                string sourceDir = Path.Combine(projectRoot, "Tools", "PythonEmbed");
+                // Newest by name if more than one is lying there; the name carries the version.
+                string zip = Directory.Exists(sourceDir)
+                    ? Directory.GetFiles(sourceDir, "python-*-embed-amd64.zip")
+                               .OrderBy(p => p, System.StringComparer.OrdinalIgnoreCase).LastOrDefault()
+                    : null;
+                if (zip == null)
+                {
+                    Debug.LogWarning($"[Build] No python-*-embed-amd64.zip in {sourceDir}, so no Python was " +
+                                      "bundled. The build runs normally; it builds its database only if the " +
+                                      "PC has Python on PATH.");
+                    return;
+                }
+
+                // Cleared first so an older bundled version cannot leave files behind.
+                string dest = Path.Combine(buildDir, PostSessionHook.BundledPythonDir);
+                if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true);
+                ZipFile.ExtractToDirectory(zip, dest);
+                Debug.Log($"[Build] Bundled {Path.GetFileName(zip)} → {dest}");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[Build] Could not bundle Python: {e.Message}. The build runs normally; " +
+                                  "it builds its database only if the PC has Python on PATH.");
             }
         }
     }
