@@ -21,10 +21,10 @@ A full session takes roughly 10–25 minutes.
 ## What you need
 
 - **Unity 6000.5.0f1**. URP and the new Input System come with the project.
-- A **Windows PC that can really hit 500 fps** in this game.
+- A **Windows PC that can hit 500 fps** in this game.
 - A **16:9 monitor**. The laser's chance level (see `guessRate`) is worked out for 16:9.
 - A mouse.
-- **Python 3**, but only for the analysis scripts. Builds bring their own Python for the post-session database.
+- **Python 3**, but only for the analysis scripts. Builds bring their own Python for the post-session database. The DB is created from the CSV so this is non-critical.
 
 ## Setup
 
