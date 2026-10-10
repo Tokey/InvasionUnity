@@ -65,7 +65,7 @@ Data/Logs/3_GTZ3/
   3_GTZ3.db               the same data as SQLite, built at the end
 ```
 
-`sessionId` is the participant number. `runId` is a random 4-character tag, so two runs can never overwrite each other.
+`sessionId` is the participant number. `runId` is a random 4-character tag, so two runs can never overwrite each other. Every column is explained in [Log files](#log-files).
 
 **Participant numbers** come from `Data/SessionState.csv`:
 
@@ -285,17 +285,180 @@ Fix the file before running anyone. A plain Latin square written by hand is fine
 
 ### How it shows up in the logs
 
-All three logs have these columns on every row:
+Every log row saves `blockIndex` (which setting), `blockOrdinal` (when it was played), `latinRow`, `latinOrder` and `weaponRun`. See [Log files](#log-files).
 
-| Column | Meaning |
+---
+
+## Log files
+
+Each session folder has three CSVs. All three share the columns in the first table, then add their own.
+
+### Columns in all three logs
+
+| Column | What it is |
 |---|---|
-| `blockIndex` | Which setting this is (row of ExperimentConfig.csv) |
-| `blockOrdinal` | When it was played: 1st, 2nd, 3rd or 4th |
-| `latinRow` | Which square row this participant used |
-| `latinOrder` | The participant's whole order, e.g. `2;3;1;4` |
-| `weaponRun` | 1 = first block of this weapon, 2 = the repeat |
+| `sessionId` | Participant number, from `SessionState.csv`. |
+| `runId` | Random 4-character tag for this run of the game. |
+| `blockIndex` | Which setting: the row of `ExperimentConfig.csv` (1–4). |
+| `blockOrdinal` | When this block was played in the session (1st–4th). |
+| `latinRow` | Which Latin-square row this participant used. |
+| `latinOrder` | The participant's whole block order, e.g. `1;2;4;3`. |
+| `weaponRun` | 1 = first block with this weapon, 2 = the repeat. |
+| `unityApplicationFps` | Frame-rate cap of the block (60 or 500). |
+| `testMode` | Always `FrameTimeStutter`. |
+| `weapon` | `laser` or `shockwave`. |
+| `cfg_*` | A copy of every `ExperimentConfig.csv` column for this block (30 columns). |
 
-Every row also carries `cfg_*` copies of all the config columns, so any log file tells you exactly which settings it ran with.
+ShotLog and PlayerLog also have these three:
+
+| Column | What it is |
+|---|---|
+| `closeRadius` | Laser hit radius in world units (5.5). |
+| `phase` | `practice` or `main`. Only `main` counts toward the threshold. |
+| `phaseStartIso` | Clock time this phase started. `timeSinceStartSec` and the `...AtSec` times count from here. |
+
+### SessionLog: one row per block
+
+Covers the main run only, never practice.
+
+| Column | What it is |
+|---|---|
+| `startIso` | Clock time the main run started (right after GO!). |
+| `endIso` | Clock time the block finished and its row was written. |
+| `sessionDurationSec` | `endIso` − `startIso`, in seconds. |
+| `playDurationSec` | Length of the main run up to the last response, in seconds. |
+| `endReason` | Why the block stopped: `converged` (reached `stopSD`), `maxTrials`, or `abandoned` (game closed mid-block). |
+| `jndEstimateMs` | **The threshold.** QUEST+'s best estimate (posterior mean), in ms. |
+| `sd` | How unsure that estimate is (posterior SD, ms). Smaller is more sure. |
+| `priorSd` | The same SD before the first trial (73.1 ms with the default grid). |
+| `jndMedianMs` | Median of the threshold posterior (ms). |
+| `jndModeMs` | Most likely threshold value on the grid (ms). |
+| `jndCI95LoMs` | Lower end of the threshold's 95% credible interval (ms). |
+| `jndCI95HiMs` | Upper end of the threshold's 95% credible interval (ms). |
+| `slopeEstimate` | Estimated slope of the psychometric curve. |
+| `lapseEstimate` | Estimated lapse rate (misses even on huge stutters). |
+| `staircaseTrials` | Trials QUEST+ actually used. Use this as the trial count. |
+| `lastStimulusMs` | Stutter size of the last trial (ms). |
+| `shotsFired` | Every logged response, including timeouts and early or late presses. |
+| `shotsHit` | Responses with `isHit` = 1. |
+| `accuracy` | `shotsHit` / `shotsFired`. Counts every response row, so it's not QUEST+'s hit rate. |
+| `score` | Final points: `hitPoints` per hit, `missPoints` per everything else. |
+| `shotsPerMinute` | Responses per minute, time between rounds included. |
+| `avgShotIntervalSec` | Mean time between responses (s). |
+| `shotsBeforeSpike` | Responses with no stutter since the previous response (shockwave early presses). |
+| `shotsAfterSpike` | Responses with at least one stutter since the previous response. |
+| `avgSpikesBeforeShot` | Mean stutters between responses. On laser this includes crossings during the reveal. |
+| `avgSinceLastSpikeSec` | Mean time from the latest stutter's end to a press (s), over all presses. |
+| `minSinceLastSpikeSec` | Shortest of those times (s). |
+| `maxSinceLastSpikeSec` | Longest of those times (s). |
+| `swDetections` | Shockwave presses inside the window. |
+| `swEarlyFires` | Shockwave presses before the stutter. |
+| `swLateFires` | Shockwave presses after the window closed. |
+| `swTimeouts` | Rounds that ran out with no press. Despite the name, laser timeouts count here too. |
+| `swSwallowedPresses` | Presses ignored during the lockout after a too-early press. |
+| `trialsNotCounted` | Responses that were logged but not given to QUEST+ (forgiven early presses). |
+| `avgReactionSec` | Mean time from the stutter's end to the press, hits only (s). On laser it's the time to the shot. |
+| `sdReactionSec` | SD of those times (s). |
+| `minReactionSec` | Shortest of those times (s). |
+| `maxReactionSec` | Longest of those times (s). |
+| `cumMissDistX` | Sum of \|shot X − tower X\| over all presses (world units). |
+| `avgMissDistX` | Mean \|shot X − tower X\| (world units). Only means something for laser. |
+| `cumMissDistXMissesOnly` | Sum of \|shot X − tower X\| over misses only. |
+| `avgMissDistXMissesOnly` | Mean \|shot X − tower X\| over misses only. |
+| `medianMissDistX` | Median \|shot X − tower X\|. |
+| `sdMissDistX` | SD of \|shot X − tower X\|. |
+| `maxMissDistX` | Largest \|shot X − tower X\|. |
+| `totalMousePathPx` | Total mouse movement, in raw mouse counts. |
+| `avgMouseSpeedPxPerSec` | `totalMousePathPx` / `playDurationSec`. |
+| `peakMouseSpeedPxPerSec` | Fastest single-frame mouse speed (counts/s). |
+| `mouseMovementPerShot` | `totalMousePathPx` / `shotsFired`. |
+| `totalUfoPathWorld` | Total distance the UFO flew (world units). |
+| `frameCount` | Frames rendered in the main run. |
+| `avgFrameTimeMs` | Mean frame time, stutters included (ms). |
+| `p95FrameTimeMs` | 95th-percentile frame time (ms). |
+| `p99FrameTimeMs` | 99th-percentile frame time (ms). |
+| `maxFrameTimeMs` | Longest frame (ms). |
+| `avgFpsNoStutter` | Real frame rate with the stutter frames left out. |
+| `avgFrameTimeMsNoStutter` | Mean frame time with the stutter frames left out (ms). |
+| `stutterFramesExcluded` | How many frames were left out for those two. |
+| `spikesFired` | Stutters delivered in the main run. On laser this includes crossings during the reveal. |
+| `totalStutterMs` | Total measured stutter time (ms). |
+
+### ShotLog: one row per response
+
+A response is a shot or press, or a round that ran out. A shockwave round can have several rows (say an early press, then a detection).
+
+| Column | What it is |
+|---|---|
+| `roundNumber` | Round number. Main rounds keep counting across blocks; practice restarts at 1. |
+| `attemptInRound` | Which response of the round this is (1, 2, …). |
+| `roundEnded` | 1 if this response closed the round. |
+| `timeSinceStartSec` | Phase clock at this response's frame (s). |
+| `timeSinceLastShotSec` | Time since the previous response (s). |
+| `stimulusMs` | Stutter size of this trial (ms), picked by QUEST+ (or the practice ladder). |
+| `spikesSinceLastShot` | Stutters delivered since the previous response. |
+| `spikeIndexInRound` | Stutters delivered so far this round. On laser, the number of tower crossings. |
+| `swallowedPresses` | Presses ignored since the previous response (shockwave lockout). |
+| `stuttersMs` | Measured length of each of those stutters (ms, `;`-separated, oldest first). |
+| `stutterAtSec` | When each of those stutters ended (phase clock, `;`-separated). |
+| `stutterMeanMs` | Mean of `stuttersMs` (0 when empty). |
+| `stutterSdMs` | SD of `stuttersMs` (0 when empty). |
+| `stutterMinMs` | Shortest in `stuttersMs` (0 when empty). |
+| `stutterMaxMs` | Longest in `stuttersMs` (0 when empty). |
+| `lastSpikeAtSec` | When the phase's most recent stutter ended, from any round (phase clock). |
+| `sinceLastSpikeSec` | `firedAtSec` − `lastSpikeAtSec` (s). |
+| `isHit` | 1 = correct. Laser: shot within `closeRadius` of the tower. Shockwave: pressed inside the window. |
+| `totalScore` | Running score after this response. |
+| `outcome` | `shot` (laser), `detected`, `early` or `late` (shockwave), `timeout` (out of stutters), `expired` (out of time). |
+| `playerFired` | 1 if a button was pressed; 0 for `timeout` and `expired`. |
+| `countedByStaircase` | 1 if QUEST+ used this response. For any refit, keep `phase` = main and this = 1. |
+| `trialStartSec` | When the round started (phase clock). |
+| `spikeAtSec` | When the round's most recent stutter ended (phase clock). |
+| `firedAtSec` | When the press happened (phase clock). |
+| `reactionSec` | `firedAtSec` − `spikeAtSec`: time from the stutter's end to the press (s). |
+| `spikeDelaySec` | Wait before the latest stutter: the random delay on shockwave, the flying time before the crossing on laser (s). |
+| `windowSec` | Shockwave response window (s). Empty on laser. |
+| `hitX` | X position where the shot landed (the UFO's X at the press). |
+| `missDistX` | `hitX` − `towerX`. Negative = left of the tower, positive = right. |
+| `towerX` | X position of the hidden tower. |
+| `ufoY` | UFO height at the press. |
+| `side` | `Left` or `Right`: which side of the tower the UFO was on. |
+| `threshEstimateMs` | QUEST+'s threshold estimate after this response (ms). |
+| `sd` | SD of that estimate after this response (ms). |
+| `slopeEstimate` | Slope estimate after this response. |
+| `lapseEstimate` | Lapse estimate after this response. |
+
+### PlayerLog: one row per frame
+
+| Column | What it is |
+|---|---|
+| `roundNumber` | Round this frame belongs to. Same numbering as ShotLog, so the two join on it. |
+| `frameIndex` | Frame number within the phase, starting at 0. |
+| `timeSinceStartSec` | Phase clock at the start of this frame (s). |
+| `unscaledDeltaMs` | How long this frame took (ms). A stutter shows up here as one long frame, on the row after `spikeFired`. |
+| `mouseX` | Mouse pointer X on screen (pixels). |
+| `mouseY` | Mouse pointer Y on screen (pixels). |
+| `mouseDeltaX` | Raw mouse movement on X this frame (counts). |
+| `mouseDeltaY` | Raw mouse movement on Y this frame (counts). |
+| `ufoX` | UFO X position (world units). |
+| `ufoY` | UFO Y position, its height (world units). |
+| `towerX` | X position of the hidden tower. |
+| `side` | `Left` or `Right`: which side of the tower the UFO is on. |
+| `leftButtonDown` | 1 while the left mouse button is held. |
+| `leftButtonPressed` | 1 on the frame the left mouse button went down. |
+| `fireKeyDown` | 1 while Space (the other fire key) is held. |
+| `shotFired` | 1 on the frame a response was logged. Timeout frames get a 1 too. |
+| `shotHitX` | Where that shot landed on X (0 when there's no shot). |
+| `stimulusMs` | Stutter size QUEST+ is set to right now (ms). On a response frame it can already be the next trial's. |
+| `spikeFired` | 1 if a stutter ran at the end of this frame. |
+| `stutterMs` | Measured length of that stutter (ms); 0 otherwise. |
+| `windowOpen` | Shockwave: 1 while the response window is open, meaning a press now would count. |
+| `threshEstimateMs` | QUEST+'s threshold estimate so far (ms). Only changes after a response. |
+| `sd` | SD of that estimate so far (ms). |
+| `slopeEstimate` | Slope estimate so far. |
+| `lapseEstimate` | Lapse estimate so far. |
+| `accuracy` | Hits / responses so far this phase. |
+| `score` | Running score. |
 
 ---
 
@@ -309,13 +472,4 @@ Everything is in `Analysis/`:
 | `jnd_analysis.py` | All the figures, tables and stats for the paper: `python Analysis/jnd_analysis.py --data "<folder with the session folders>"`. Needs numpy, pandas, matplotlib and scipy. |
 | `plot_quest.py` | QUEST+ plots per participant. |
 
-`Analysis/COLUMNS.md` explains every log column.
-
-## Good to know
-
-- **The stutter has no sound**, on purpose. A sound would give it away.
-- **Logs are written between rounds**, never during one, because writing a file mid-round would cause its own stutter.
-- **500 fps needs headroom.** The game turns vSync off, but also turn off any frame cap in the GPU driver (NVIDIA/AMD control panel). The SessionLog saves the real frame rate (`avgFpsNoStutter`), so check it after a pilot.
-- **Piloting in the Editor:** on `ExperimentDirector`, untick `quitOnSessionComplete` to keep the end screen up.
-- **Don't untick `debugForceVisible`** on `TowerManager`. Despite the name, turning it off makes the fog cover the whole play area.
-- `Data/Logs` in the repo holds my old test runs. Clear it out before a real study if you want a clean folder.
+`Analysis/COLUMNS.md` has longer notes on the log columns.
