@@ -471,5 +471,3 @@ Everything is in `Analysis/`:
 | `build_db.py` | Builds a SQLite `.db` for each session. It runs by itself at the end of every session. To rebuild: `python Analysis/build_db.py --data "<build>/Data"` |
 | `jnd_analysis.py` | All the figures, tables and stats for the paper: `python Analysis/jnd_analysis.py --data "<folder with the session folders>"`. Needs numpy, pandas, matplotlib and scipy. |
 | `plot_quest.py` | QUEST+ plots per participant. |
-
-`Analysis/COLUMNS.md` has longer notes on the log columns.
