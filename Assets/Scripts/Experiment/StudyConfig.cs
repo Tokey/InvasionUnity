@@ -103,12 +103,14 @@ namespace JndUfo
         ///
         /// Chance level is set by W against the first-delay spread and by how many early presses
         /// are forgiven — see <see cref="ShockwaveGuessRate"/> for the model — so these numbers
-        /// set guessRate between them and cannot be chosen independently of it. A 1.5-3 s first
-        /// delay, 0.4 s window and one forgiven early press come to 1 − (1 − 0.4/1.5)² = 0.462,
-        /// which is what the shockwave rows carry. Widening the spread or forgiving fewer early
-        /// presses lowers it; widening the window raises it. The re-spike gap does not enter.
+        /// and guessRate have to change together. The study's shockwave rows use a 1–3.5 s first
+        /// delay and a 0.9 s window, with guessRate set to window / spread = 0.9 / 2.5 = 0.36;
+        /// the optimal-guesser model gives 1 − (1 − 0.36)² ≈ 0.59 for the same timing, which is
+        /// what <see cref="ValidateShockwaveTiming"/> reports at load. Widening the spread or
+        /// forgiving fewer early presses lowers chance; widening the window raises it. The
+        /// re-spike gap does not enter.
         ///
-        /// The re-spike gap is drawn from the same 1.5-3 s span as the first delay, so a
+        /// The re-spike gap is drawn from the same span as the first delay, so a
         /// re-presentation is exactly as unpredictable as a round's first stutter.
         /// </summary>
         public float swSpikeDelayMinSec = 1.5f;
@@ -254,13 +256,14 @@ namespace JndUfo
         ///
         /// Changing this REQUIRES changing guessRate in ExperimentConfig.csv — chance level is
         /// 2r / shot-reachable width. GuessRateCalculator prints the correct value at startup
-        /// and warns when the CSV disagrees. r = 5 gives γ = 0.222 on 16:9, which is what the
-        /// laser rows carry.
+        /// and warns when the CSV disagrees. r = 5 gave γ = 0.222 on 16:9; the current r = 5.5
+        /// gives the 0.244 the laser rows carry.
         ///
         /// γ is aspect-dependent and this radius is not: the camera's FOV is vertical, so the
         /// shot-reachable width grows with the display's aspect ratio while r stays put. The
-        /// laser guessRate is calibrated for 16:9 — the same r = 5 gives γ = 0.167 on 21:9, so an
-        /// ultrawide session needs its own guessRate or QUEST+ is handed the wrong chance level.
+        /// laser guessRate is calibrated for 16:9 — the same r gives a γ about a quarter lower on
+        /// 21:9, so an ultrawide session needs its own guessRate or QUEST+ is handed the wrong
+        /// chance level.
         /// </summary>
         public readonly float closeRadius      = 5.5f;
         public readonly bool  showHitZone      = true;
@@ -573,18 +576,24 @@ namespace JndUfo
             return names;
         }
 
-        // The seed file. QUEST+ grid values carry over from the old FrametimeQuestConfig.csv.
+        // The seed file, written only when Data/ExperimentConfig.csv is missing. It is the
+        // configuration the main study ran with, so a fresh machine that lost the file still runs
+        // the real study rather than an old draft of it.
         static string DefaultCsv()
         {
             var sb = new StringBuilder();
             const string ladder = "450;300;200;100;50";
             const string repeat = "450";
-            // First delay 1.5–3 s, window 0.4 s, re-spike gap 1.5–3 s (the same span, so a
-            // re-presentation is as unpredictable as the first), one forgiven early press.
-            const string timing = "1.5,3,0.4,1.5,3,1";
+            // Shockwave: first stutter 1–3.5 s after the gun, a 0.9 s response window, the
+            // re-spike gap on the same 1–3.5 s span (so a re-presentation is as unpredictable as
+            // the first), one forgiven early press, then 5 looks per round and no wall clock.
+            const string swTiming    = "1,3.5,0.9,1,3.5,1,5,0";
+            // Laser: the shockwave timing columns are unused but still echoed into the logs;
+            // the round ends after 10 tower crossings or 15 s, whichever comes first.
+            const string laserTiming = "1.5,3,0.4,1.5,3,1,10,15";
             const string points = "100,-10";
-            const string grids  = "5,250,40,5,250,60,1,7,10,0,0.06,4";
-            const string stop   = "50,8,5";
+            const string grids  = "1,250,40,1,250,60,1,7,10,0,0.06,4";
+            const string stop   = "50,8,6";
 
             sb.AppendLine(
                 "weapon,unityApplicationFps,practiceStuttersMs,practiceRepeatStuttersMs," +
@@ -600,13 +609,14 @@ namespace JndUfo
             //
             // guessRate is the exception and must differ: it is chance level, and chance level is
             // a property of the task. For the laser it is geometric (2r / shot-reachable width,
-            // printed at startup by GuessRateCalculator); for shockwave it is temporal — the best
-            // a participant who perceives nothing can do by picking a moment to fire, printed at
-            // startup by ShockwaveGuessRate. Using one number for both would misfit one of them.
+            // printed at startup by GuessRateCalculator: 0.244 on 16:9). For shockwave the study
+            // sets it to window / first-delay spread = 0.9 / 2.5 = 0.36; ShockwaveGuessRate prints
+            // the optimal-guesser figure for comparison. Using one number for both tasks would
+            // misfit one of them.
             //
             // Round bounds differ per weapon too. Shockwave is bounded by its stutter cap alone
-            // (10 looks, then a miss) and leaves the wall clock off, since 10 re-presentations can
-            // legitimately run past 20 s. Laser gets both: 10 crossings, or 20 s, whichever first.
+            // (5 looks, then a miss) and leaves the wall clock off. Laser gets both: 10 crossings,
+            // or 15 s, whichever first.
             //
             // Every row carries BOTH ladders, because the Latin square decides which block of a
             // weapon comes first and the file no longer knows. The full ladder runs the first time
@@ -616,10 +626,10 @@ namespace JndUfo
             // Four rows: both weapons at both frame-rate caps, which is the 2x2 the square
             // counterbalances. Their ORDER here is only the identity of each setting — the order a
             // participant plays them in comes from Data/LatinSquare.csv.
-            sb.AppendLine($"shockwave,60,{ladder},{repeat},{timing},10,0,{points},{grids},0.462,{stop}");
-            sb.AppendLine($"laser,60,{ladder},{repeat},{timing},10,20,{points},{grids},0.222,{stop}");
-            sb.AppendLine($"laser,500,{ladder},{repeat},{timing},10,20,{points},{grids},0.222,{stop}");
-            sb.AppendLine($"shockwave,500,{ladder},{repeat},{timing},10,0,{points},{grids},0.462,{stop}");
+            sb.AppendLine($"shockwave,60,{ladder},{repeat},{swTiming},{points},{grids},0.36,{stop}");
+            sb.AppendLine($"laser,60,{ladder},{repeat},{laserTiming},{points},{grids},0.244,{stop}");
+            sb.AppendLine($"laser,500,{ladder},{repeat},{laserTiming},{points},{grids},0.244,{stop}");
+            sb.AppendLine($"shockwave,500,{ladder},{repeat},{swTiming},{points},{grids},0.36,{stop}");
             return sb.ToString();
         }
     }

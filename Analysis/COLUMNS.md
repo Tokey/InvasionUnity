@@ -18,16 +18,16 @@ number = `blockIndex` in the logs.
 |---|---|
 | Condition | `weapon` (`laser`/`shockwave`), `unityApplicationFps` (0 = uncapped) |
 | Practice | `practiceStuttersMs` — the ladder for the **first** block of this weapon, `;`-separated (5 values); `practiceRepeatStuttersMs` — the ladder for the **repeat** block (1 value) |
-| Shockwave timing | `swSpikeDelayMinSec`, `swSpikeDelayMaxSec` (first stutter 1.5–3 s after the gun), `swWindowSec` (0.4 s), `swRespikeMinSec`, `swRespikeMaxSec` (re-presentation 1.5–3 s after an unanswered window closes — the same span as the first delay), `swMaxEarlyPerRound` (1 forgiven early press) |
+| Shockwave timing | `swSpikeDelayMinSec`, `swSpikeDelayMaxSec` (first stutter 1–3.5 s after the gun), `swWindowSec` (0.9 s), `swRespikeMinSec`, `swRespikeMaxSec` (re-presentation 1–3.5 s after an unanswered window closes — the same span as the first delay), `swMaxEarlyPerRound` (1 forgiven early press). Laser rows carry these columns too (1.5–3 s, 0.4 s) but never use them |
 | Round bounds | `maxSpikesPerRound`, `roundTimeoutSec` |
 | Scoring | `hitPoints`, `missPoints` (still define `isHit` for the laser, and still logged, even though the HUD now shows a hit/miss tally instead of a score) |
 | QUEST+ stimulus grid | `stimMinMs`, `stimMaxMs`, `stimCount` |
 | QUEST+ θ grid | `threshMinMs`, `threshMaxMs`, `threshCount` |
 | QUEST+ β grid | `slopeMin`, `slopeMax`, `slopeCount` |
 | QUEST+ λ grid | `lapseMin`, `lapseMax`, `lapseCount` |
-| QUEST+ rules | `guessRate` (γ — chance level, per task: 0.222 laser, 0.462 shockwave = 1 − (1 − 0.4/1.5)²), `maxTrials`, `minTrials`, `stopSD` |
+| QUEST+ rules | `guessRate` (γ — chance level, fixed per task: 0.244 laser, from the scene geometry on 16:9; 0.36 shockwave = window / first-delay spread = 0.9 / 2.5), `maxTrials`, `minTrials`, `stopSD` |
 
-Not in the file, pinned in `StudyConfig`: `closeRadius` = 5, `fireCooldown` = 0.25 s,
+Not in the file, pinned in `StudyConfig`: `closeRadius` = 5.5, `fireCooldown` = 0.25 s,
 `swEarlyLockoutSec` = 1 s, `revealHoldSec` = 1.5 s, `readyBeatSec` = 0.5 s, and
 `practiceMaxMissesPerRound` = 3 — a shockwave **practice** round closes as a miss after its
 third unanswered window instead of the tenth, so the ladder keeps moving.
