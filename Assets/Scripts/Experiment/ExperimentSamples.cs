@@ -3,220 +3,130 @@ using UnityEngine;
 namespace JndUfo
 {
     /// <summary>
-    /// One trial: the stimulus presented, where the shot landed, and the state of the QUEST+
-    /// posterior immediately after the response was folded in.
+    /// One round: the frame-rate split it presented, how faithfully each side was delivered, how
+    /// the participant explored it, where the shot landed, and the QUEST+ posterior immediately
+    /// after the response was folded in.
     ///
-    /// Derivable quantities are deliberately absent — <c>hitX</c> is <c>towerX + missDistX</c>,
-    /// <c>absMissDistX</c> is its magnitude, and the Euclidean miss equals the X miss because
-    /// the tower, the UFO and every shot sit on the same fixedZ plane.
+    /// Derivable quantities are deliberately absent — <c>hitX</c> is <c>towerX + missDistX</c>, the
+    /// left/right frame rates follow from <c>alteredSide</c>, <c>baseFps</c> and <c>alteredFps</c>,
+    /// and whether the shot came from the altered side is <c>side == alteredSide</c>.
     /// </summary>
     public struct ShotSample
     {
-        public int   roundNumber;           // 1-based within the phase
-        /// <summary>1-based index of this response within its round. A shockwave round logs one
-        /// row per press (early, late, detected) plus one for a round that ran out, so several
-        /// rows can share a roundNumber; a laser round is always one row.</summary>
-        public int   attemptInRound;
-        /// <summary>True on the row that closed the round — the one followed by the reveal.</summary>
-        public bool  roundEnded;
-        /// <summary>Shockwave: stutters delivered so far this round when this response was made —
-        /// the presentation it answers, 1-based; 0 for a press before the round's first (an early
-        /// press after a TRY AGAIN! carries the count so far, since the round's stutters are
-        /// behind it even though none is since the gate). Laser: tower crossings so far this round.</summary>
-        public int   spikeIndexInRound;
-        public float timeSinceStartSec;
-        public float timeSinceLastShotSec; // equals timeSinceStartSec for the first trial
+        public int   roundNumber;          // 1-based; main rounds continue across blocks
+        public float timeSinceStartSec;    // phase clock at the response
+        /// <summary>The round's base frame rate — the block's in a main round, the pair's higher
+        /// rate in practice. Written into the identity's baseFps column.</summary>
+        public int   baseFps;
 
-        /// <summary>The stutter size presented for this trial (ms) — the stimulus.</summary>
-        public float stimulusMs;
-        /// <summary>Stutters delivered since the previous logged response — tower crossings on a
-        /// laser block, timed presentations on a shockwave one.</summary>
-        public int   spikesSinceLastShot;
-        /// <summary>Presses swallowed since the previous logged response — inside the early
-        /// lockout, or under EarlyFirePolicy.IgnoreAndContinue. They produced no shot and no row,
-        /// so this is the only count of them; each still shows in the frame log as a press with
-        /// shotFired false.</summary>
-        public int   swallowedPresses;
+        // ── The stimulus ─────────────────────────────────────────────────────
+        /// <summary>Δ: how far the altered side's frame rate is from the base (fps). The stimulus
+        /// QUEST+ (or the practice ladder) chose for this round.</summary>
+        public int    diffFps;
+        /// <summary>The altered side's frame-rate cap: base − Δ or base + Δ.</summary>
+        public int    alteredFps;
+        /// <summary>"Left" or "Right" of the tower — drawn per round unless the config pins it.</summary>
+        public string alteredSide;
 
-        // ── Stutters actually delivered before this shot ─────────────────────
-        // Measured durations, not requested ones, so comparing these against stimulusMs
-        // shows how faithfully the stimulus was presented. All the crossings in a trial
-        // fire at the same requested level, so spread here is delivery jitter.
+        // ── What was actually delivered ──────────────────────────────────────
+        /// <summary>Frames over frame time while the UFO was on each side this round. NaN when it
+        /// never spent a frame there. Compare against baseFps / alteredFps: a shortfall means the
+        /// machine could not hold the cap and the stimulus was smaller than intended.</summary>
+        public float measuredBaseFps;
+        public float measuredAlteredFps;
+        /// <summary>Seconds the UFO spent on each side while the split was in force.</summary>
+        public float baseSideSec;
+        public float alteredSideSec;
+        /// <summary>Precise limiter: frames this round that overran their slot and were released
+        /// with no wait. 0 under Unity's limiter, which does not report it.</summary>
+        public int   lateFrames;
 
-        /// <summary>Each stutter, oldest first, as "50.12;52.44;70.19". Empty if none fired.</summary>
-        public string stuttersMs;
-        /// <summary>When each of those finished, phase clock, same order as stuttersMs:
-        /// "3.4120;5.0187". The last entry equals spikeAtSec on a shockwave block.</summary>
-        public string stutterAtSec;
-        public float  stutterMeanMs;
-        /// <summary>Population SD (÷n), so it is 0 rather than undefined for a single stutter.</summary>
-        public float  stutterSdMs;
-        public float  stutterMinMs;
-        public float  stutterMaxMs;
+        // ── How the participant explored it ──────────────────────────────────
+        /// <summary>Times the UFO crossed the tower — the frame-rate boundary — this round.</summary>
+        public int   crossings;
+        /// <summary>Phase clock of the last crossing this round; NaN if there was none.</summary>
+        public float lastCrossingAtSec;
+        /// <summary>firedAtSec − lastCrossingAtSec: how long after the last boundary crossing the
+        /// shot came. NaN with no shot or no crossing.</summary>
+        public float sinceLastCrossingSec;
 
-        public bool  isHit;                // landed within closeRadius of the tower base
-        public float totalScore;           // running score after this shot
+        // ── Outcome ──────────────────────────────────────────────────────────
+        public TrialOutcome outcome;
+        /// <summary>False only for a round that ran out with no shot. hitX and missDistX are blank
+        /// then rather than filled with the UFO's resting position.</summary>
+        public bool  playerFired;
+        /// <summary>Landed within closeRadius of the tower base — the detection response.</summary>
+        public bool  isHit;
+        /// <summary>Whether this response reached the QUEST+ posterior. False for practice rounds;
+        /// any analysis that reconstructs the staircase must keep only phase=main and this = 1.</summary>
+        public bool  countedByStaircase;
+        public float totalScore;           // running score after this response
 
-        // ── The stutter immediately before this response (both weapons) ──────
-        // stutterAtSec above lists every stutter since the previous response; these two single
-        // out the LAST one and time the response against it. On a laser block that is the most
-        // recent tower crossing; on a shockwave block, the most recent presentation. Unlike
-        // spikeAtSec below they are not scoped to the round: a shot that follows no stutter this
-        // round still says how long ago the last one was, and spikesSinceLastShot = 0 says that
-        // it was before the previous response.
-
-        /// <summary>Phase-clock time the most recent stutter of this phase finished, whichever
-        /// round it belonged to. NaN before the phase's first stutter.</summary>
-        public float lastSpikeAtSec;
-
-        /// <summary>firedAtSec − lastSpikeAtSec: how long after the most recent stutter this
-        /// response came. NaN when no shot was fired or no stutter has run yet this phase. On a
-        /// laser block this is the number that says whether the stutter could still have been
-        /// throwing the participant's aim; on a shockwave block it equals reactionSec for a
-        /// detection or a late press, and is also defined for an early press (where reactionSec
-        /// is not).</summary>
-        public float sinceLastSpikeSec;
-
-        // ── Trial timing ────────────────────────────────────────────────────
-        // The window columns are NaN on a laser block, where the stutter is triggered by the
-        // participant's own movement and there is no window to answer it in; the instants are
-        // filled for both weapons.
-
-        /// <summary>How the response resolved: <c>shot</c> (laser), <c>detected</c> / <c>early</c> /
-        /// <c>late</c> (shockwave presses), or <c>timeout</c> / <c>expired</c> (either weapon, a
-        /// round that ran out of stutters or of clock with no shot). The failures are different
-        /// mistakes, so they must not be collapsed in the log the way isHit does.</summary>
-        public string outcome;
-
-        /// <summary>False only for a round that ran out with no shot. Everything positional in
-        /// this row is the UFO's resting position rather than a landing point when this is false.</summary>
-        public bool playerFired;
-
-        /// <summary>Whether this response reached the QUEST+ posterior. False for practice trials
-        /// and for early fires discarded under EarlyFirePolicy.DiscardAndRetry — both are logged in
-        /// full, and any analysis that reconstructs the staircase must filter on this.</summary>
-        public bool countedByStaircase;
-
-        /// <summary>Phase-relative time the round armed — the starting gun the round's stutters
-        /// are timed from (shockwave), or simply when the round opened (laser).</summary>
+        // ── Timing (phase clock) ─────────────────────────────────────────────
+        /// <summary>When the round armed — firing handed back at its GO!.</summary>
         public float trialStartSec;
-
-        /// <summary>
-        /// Phase-relative time the round's most recent stutter finished being delivered — when
-        /// the spike was thrown. Shockwave: the presentation this response answers. Laser: the
-        /// last tower crossing this round.
-        ///
-        /// Measured at the END of the stutter, not the start: it blocks the main thread, so the
-        /// participant cannot have reacted to it until the frame after it completes, and dating it
-        /// from the start would credit them with a reaction time shorter than the stimulus itself.
-        /// NaN when no stutter ran this round yet — a shockwave early press, or a laser shot with
-        /// no crossing behind it (see lastSpikeAtSec for the one before the round).
-        /// </summary>
-        public float spikeAtSec;
-
-        /// <summary>Phase-relative time the participant fired, either weapon. NaN on a timeout.</summary>
+        /// <summary>When the participant fired. NaN for a round that ran out.</summary>
         public float firedAtSec;
+        /// <summary>From the round arming to its end, shot or not (s).</summary>
+        public float roundDurationSec;
 
-        /// <summary>firedAtSec - spikeAtSec: how long after the stutter the press came, measured
-        /// from the stutter's END. Defined wherever the press answers that stutter, either weapon:
-        /// a shockwave detection (inside the window) or late press (after it), and a laser shot
-        /// with a tower crossing behind it this round, hit or miss. NaN for a laser shot with no
-        /// crossing yet, for timeouts, and for shockwave early presses — even one made after a
-        /// TRY AGAIN! with a stutter earlier in the round: that press answers nothing.</summary>
-        public float reactionSec;
-
-        /// <summary>The wait that led up to the most recent stutter (s). Shockwave: the delay
-        /// that produced it — randomised per presentation, so it cannot be recovered from the
-        /// config. Laser: from the round's start (first crossing) or the previous crossing's
-        /// stutter ending, to this one starting. NaN when no stutter has run this round.</summary>
-        public float spikeDelaySec;
-
-        /// <summary>Shockwave: the response window (s). NaN on a laser block, which judges a shot
-        /// by aim and has no window.</summary>
-        public float windowSec;
-
-        /// <summary>Where the shot actually landed on X.
-        ///
-        /// Logged rather than inferred: the beam's direction and origin are Inspector fields on
-        /// LaserFirer, so hit.x only equals the UFO's x while the beam points straight down from
-        /// it. Recording it keeps missDistX reproducible without that assumption.</summary>
-        public float hitX;
-        /// <summary>Signed horizontal miss along Unity X: hit.x - tower.x. Negative = left of tower.</summary>
-        public float missDistX;
-        public float towerX;               // where the tower was for this trial
-        public float ufoY;                 // firing altitude
-        public string side;                // side of the tower the UFO was on when firing
+        // ── Geometry ─────────────────────────────────────────────────────────
+        /// <summary>Where the shot landed on X — the UFO's X at the press.</summary>
+        public float  hitX;
+        /// <summary>Signed horizontal miss: hitX − towerX. Negative = left of the tower.</summary>
+        public float  missDistX;
+        public float  towerX;
+        public float  ufoY;
+        /// <summary>Which side of the tower the shot was fired from ("Left"/"Right").</summary>
+        public string side;
 
         // ── QUEST+ posterior after this response ─────────────────────────────
-        public float threshEstimateMs;     // θ̂
-        public float sd;                   // SD of the θ marginal
+        public float threshDiffFps;        // θ̂, fps difference
+        public float sd;                   // SD of the θ marginal (fps)
         public float slopeEstimate;        // β̂
-        public float lapseEstimate;        // λ̂ — the curve's ceiling is 1 - λ
+        public float lapseEstimate;        // λ̂ — the curve's ceiling is 1 − λ
     }
 
     /// <summary>
-    /// One rendered frame of player input and world state, plus the live experiment state at
-    /// that instant. Written every frame, so its row rate follows FPS by design — a stutter shows
-    /// up as a single long <see cref="unscaledDeltaMs"/> rather than smeared across fixed-rate
-    /// samples.
+    /// One rendered frame of input and world state. Written every frame, so its row rate follows
+    /// the frame rate by design.
     ///
-    /// The QUEST+ figures here are cached values read from PerturbationController, not fresh
-    /// reductions: recomputing the posterior every frame would cost ~2k grid cells per frame in
-    /// exactly the place this study measures frame times.
+    /// <see cref="unscaledDeltaMs"/>, <see cref="targetFps"/> and <see cref="pacedBy"/> all describe
+    /// the SAME frame period: the time since the previous row, the cap that paced it, and which
+    /// side's cap that was. (The cap is chosen at the end of a frame and paces the next one, so the
+    /// side on a row and the cap on a row can disagree for the single frame after a crossing.)
     /// </summary>
     public struct TickSample
     {
-        /// <summary>The round this frame belongs to — the same 1-based number the shot log gives
-        /// it, so the two files join on it directly. A shot's frame carries the shot row's
-        /// roundNumber; the reveal frames after a round closes already carry the next one.</summary>
-        public int   roundNumber;
+        public int   roundNumber;          // same numbering as the shot log, so the two join on it
+        /// <summary>The base frame rate in force on this frame — the block's in a main phase, the
+        /// current practice pair's higher rate in practice. Written into the baseFps column.</summary>
+        public int   baseFps;
         public int   frameIndex;           // 0-based within the phase
         public float timeSinceStartSec;
-        public float unscaledDeltaMs;      // this frame's real duration — the stutter shows here
+        public float unscaledDeltaMs;      // this frame's real duration
 
-        public Vector2 mousePos;           // raw pointer position, screen px
-        public Vector2 mouseDelta;         // raw hardware delta this frame, px
+        public int   targetFps;            // the cap that paced this frame
+        public PerturbationController.Pace pacedBy;
 
-        public float ufoX;
-        public float ufoY;
-        public float towerX;
-        public string side;
+        public int    diffFps;             // the round's Δ; written blank between rounds
+        public string alteredSide;         // the round's altered side; empty between rounds
+        public string side;                // side of the tower the UFO is on
+        public bool   crossed;             // the UFO crossed the tower on this frame, mid-round
 
-        public bool leftDown;
-        public bool leftPressedThisFrame;
-        public bool fireKeyDown;           // the alt-fire key (Space by default)
+        public Vector2 mousePos;           // pointer position, screen px
+        public Vector2 mouseDelta;         // raw hardware delta this frame
+        public float   ufoX;
+        public float   ufoY;
+        public float   towerX;
 
-        /// <summary>
-        /// A shot was actually accepted and scored on this frame.
-        ///
-        /// Not the same as leftPressedThisFrame: LaserFirer drops presses that arrive during
-        /// the fire cooldown or while firing is disabled for the reveal sequence, and frames
-        /// keep being logged throughout that window. Without this flag there is no reliable
-        /// way to tell from the frame log which presses became trials.
-        /// </summary>
+        public bool  leftDown;
+        public bool  leftPressedThisFrame;
+        public bool  fireKeyDown;          // the alt-fire key (Space)
+
+        /// <summary>A response was logged on this frame — a shot, or a round that ran out. Not the
+        /// same as leftPressedThisFrame: presses during the cooldown or between rounds are dropped.</summary>
         public bool  shotFired;
         public float shotHitX;             // where it landed on X (0 when shotFired is false)
-
-        public float stimulusMs;           // stutter size QUEST+ currently proposes
-        public bool  spikeFired;           // a stutter was executed at the end of this frame
-        public float stutterMs;            // its measured magnitude (0 when spikeFired is false)
-
-        /// <summary>
-        /// Shockwave only: the response window was open on this frame, so a press here would
-        /// have counted as a detection.
-        ///
-        /// This is what makes the frame log answer "was the participant able to respond yet?"
-        /// without reconstructing the window from the shot row's timings — and it is the column
-        /// that shows an early press sitting in the run of frames before the window ever opened.
-        /// </summary>
-        public bool windowOpen;
-
-        // ── Live experiment state ────────────────────────────────────────────
-        public float threshEstimateMs;     // θ̂ so far
-        public float sd;                   // SD of the θ marginal so far
-        public float slopeEstimate;        // β̂ so far
-        public float lapseEstimate;        // λ̂ so far — the curve's ceiling is 1 - λ
-        public float accuracy;             // hits / shots so far this phase
-        public float score;                // running score
     }
 }

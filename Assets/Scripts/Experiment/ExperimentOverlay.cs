@@ -36,11 +36,9 @@ namespace JndUfo
         /// </summary>
         const float HintCentreOffsetY = 160f;
 
-        /// <summary>Shortest an alert may be on screen before anything is allowed to clear it — the
-        /// trial ending, or the shockwave window closing. A participant who answers on the stutter
-        /// frame takes firing away on the very next frame, and a window shorter than this would
-        /// cut the line before it could be read; either way the line they are meant to read would
-        /// be taken away as they read it.</summary>
+        /// <summary>Shortest an alert may be on screen before anything is allowed to clear it. A
+        /// participant who fires the instant they cross the boundary takes firing away on the very
+        /// next frame, and cutting the line there would take it away as they read it.</summary>
         const float HintPunchMinSec = 0.45f;
 
         GameObject      _root;
@@ -58,13 +56,13 @@ namespace JndUfo
         /// <see cref="Idle"/> is a standing instruction that breathes quietly — present enough to
         /// tell the participant what they are looking for, dull enough that they stop attending to
         /// it and watch the game instead. <see cref="Alert"/> is the same line of text slammed to
-        /// twice the size, shaken and strobed at the instant a stutter is delivered.
+        /// twice the size, shaken and strobed at the instant the UFO crosses the frame-rate
+        /// boundary.
         ///
-        /// It has to be that violent. The stimulus at the top of the QUEST+ grid is a single 250 ms
-        /// frame, and near threshold it is a handful of milliseconds — a participant who has never
-        /// knowingly seen one cannot learn what to look for from a caption that merely appears.
+        /// It has to be that violent. A participant who has never knowingly compared two frame
+        /// rates side by side cannot learn what to look for from a caption that merely appears.
         /// The alert is not there to be read, it is there to be impossible to miss, so the two
-        /// events fuse and the stutter itself becomes recognisable.
+        /// events fuse and the change in motion itself becomes recognisable.
         /// </summary>
         enum HintMode { Off, Idle, Alert }
 
@@ -73,10 +71,9 @@ namespace JndUfo
         Vector2         _hintRestPos;
         HintMode        _hintMode;
         string          _idleText  = "";
-        // realtimeSinceStartup, not unscaledTime. The alert is raised in the LateUpdate that
-        // follows the stutter, and unscaledTime is stamped once at the top of the frame — before
-        // the block. Measured from there, a 450 ms practice stutter would start the punch 450 ms
-        // in, with the slam already ~93% decayed on its first rendered frame.
+        // realtimeSinceStartup, not unscaledTime: unscaledTime is stamped once at the top of the
+        // frame, and on the slow side of a large difference a frame can be 100 ms long — the punch
+        // would start already well into its decay.
         float           _alertStart;
         float           _alertHold;
         bool            _alertReleased;   // the window closed: hand back to Idle once readable
@@ -86,18 +83,14 @@ namespace JndUfo
 
         [Header("Between-Trial Gate")]
         [Tooltip("Shown for the frame or two the round's log rows take to reach disk, before " +
-                 "READY. Names the pause so a hitch there reads as bookkeeping, not as a stutter.")]
+                 "READY. Names the pause so a hitch there reads as bookkeeping, not as a change " +
+                 "of frame rate.")]
         public string gateSavingText = "SAVING…";
         [Tooltip("Shown while the scene resets, pulsing. Reads as the run-up to the starting gun " +
                  "rather than as a stoppage — the participant is being counted in, not told off.")]
         public string gateHoldText = "READY…";
         [Tooltip("The starting gun itself. Shaken, then the gate lifts and firing comes back.")]
         public string gateGoText   = "GO!";
-        [Tooltip("The shockwave task's starting gun after TOO LATE!. Shaken like GO!, with no veil " +
-                 "and no READY… before it: the round is still open and nothing in the scene has " +
-                 "changed, so the one word is the whole re-gate — it replaces the callout in the " +
-                 "same spot, and firing comes back the frame it leaves.")]
-        public string gateRetryText = "TRY AGAIN!";
         [Tooltip("How much of the play area the reset veil covers. Opaque would hide the pan and " +
                  "the skybox spin, which are what sell the scene changing location.")]
         [Range(0f, 1f)] public float waitVeilAlpha = 0.62f;
@@ -164,10 +157,9 @@ namespace JndUfo
         /// <summary>
         /// Flashes a one-line coaching line for <paramref name="holdSec"/>, then fades it.
         ///
-        /// Practice only — the caller enforces that, and it matters: the hint fires on the stutter,
-        /// so in a main round it would be a second, unmissable copy of the very stimulus QUEST+ is
-        /// measuring the detectability of. In practice that is the point, since a participant who
-        /// has never knowingly seen a stutter cannot tell what they are being asked to look for.
+        /// Practice only — the caller enforces that, and it matters: the hint fires on the boundary,
+        /// so in a main round it would hand over the very location QUEST+ is asking the participant
+        /// to find. In practice that is the point: it shows them what they are looking for.
         ///
         /// Retriggering restarts the hold rather than stacking, so a run of crossings in quick
         /// succession leaves one steady line instead of a flicker.
@@ -192,8 +184,9 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// The stutter just landed: slam the prompt to alert. Retriggering restarts the punch, so a
-        /// run of crossings in quick succession reads as repeated hits rather than one long wobble.
+        /// The UFO just crossed the boundary: slam the prompt to alert. Retriggering restarts the
+        /// punch, so a run of crossings in quick succession reads as repeated hits rather than one
+        /// long wobble.
         /// </summary>
         public void FlashHint(string text, float holdSec)
         {
@@ -212,11 +205,10 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// The alert's reason has passed — the shockwave window closed with the round still live —
-        /// so hand back to the standing prompt, once the punch has been on screen long enough to
-        /// read. "FIRE NOW" over a closed window is an instruction to fail; the prompt that comes
-        /// back says what to do instead, which is watch for it again. The next stutter flashes the
-        /// alert afresh. Harmless to call every frame, and a no-op outside the alert state.
+        /// The alert's reason has passed with the round still live, so hand back to the standing
+        /// prompt once the punch has been on screen long enough to read. The next trigger flashes
+        /// the alert afresh. Harmless to call every frame, and a no-op outside the alert state.
+        /// (Unused by the frame-rate task, whose alert holds until the shot.)
         /// </summary>
         public void ReleaseAlertHint()
         {
@@ -224,7 +216,7 @@ namespace JndUfo
         }
 
         /// <summary>Clears the standing prompt but lets an alert already in flight finish — the
-        /// participant fires the moment the stutter lands, which takes firing away on the very next
+        /// participant may fire the moment they cross, which takes firing away on the very next
         /// frame, and cutting the alert there would make it unreadable exactly when it matters.</summary>
         public void HideIdleHint()
         {
@@ -256,7 +248,7 @@ namespace JndUfo
         ///
         /// It masks as well as instructs. The camera pan, the tower move and whatever the runtime
         /// does with the frame it happens to be on all land in this window, and a hitch there is
-        /// visible motion the participant has no way to distinguish from a deliberate stutter.
+        /// visible motion the participant has no way to distinguish from a change of frame rate.
         /// Under a veil there is nothing moving to judge, so an accidental long frame simply is not
         /// perceptible — which is cheaper and more reliable than trying to make the reset free.
         ///
@@ -330,8 +322,8 @@ namespace JndUfo
             if (_gateRoot != null) _gateRoot.SetActive(false);
             _pulseHold = false;
             _veilRamp  = 0f;
-            // A beat cut short from outside (AbandonRegate) leaves the word mid-shake; put it
-            // straight so the next thing on the gate does not start displaced.
+            // A beat cut short from outside leaves the word mid-shake; put it straight so the next
+            // thing on the gate does not start displaced.
             if (_gate != null)
             {
                 _gate.rectTransform.anchoredPosition = Vector2.zero;
@@ -348,20 +340,10 @@ namespace JndUfo
         /// <summary>
         /// Swaps "READY…" for "GO!", shakes it for <paramref name="seconds"/>, then clears the
         /// veil. Yield on this from the reveal sequence and hand firing back when it returns, so
-        /// "the word left the screen" and "shots count again" are the same instant.
-        ///
-        /// The shockwave clock arms off the firing-enabled edge, so this also gives that task a
-        /// defined starting gun rather than letting a trial begin mid-pan.
+        /// "the word left the screen" and "shots count again" are the same instant — the round
+        /// clock arms off that firing-enabled edge, so a round never starts mid-pan.
         /// </summary>
         public IEnumerator GoBeat(float seconds) => WordBeat(gateGoText, _gateGoColor, seconds);
-
-        /// <summary>
-        /// The TOO LATE re-gate's starting gun: "TRY AGAIN!", shaken exactly like GO!, then gone —
-        /// and the caller hands firing back when this returns, the same contract as
-        /// <see cref="GoBeat"/>. No veil goes up: the gate was down, so the ramp is at zero and
-        /// the veil image stays fully transparent under the word.
-        /// </summary>
-        public IEnumerator RetryBeat(float seconds) => WordBeat(gateRetryText, _gateHoldColor, seconds);
 
         IEnumerator WordBeat(string text, Color color, float seconds)
         {
@@ -380,8 +362,8 @@ namespace JndUfo
             _veilTarget      = 0f;
             ApplyGateText();
 
-            // Unscaled throughout: a stutter is a main-thread block, and timing the starting gun
-            // off a scaled clock would make the countdown itself carry the stimulus.
+            // Unscaled throughout, so the starting gun runs on the wall clock whatever the frame
+            // rate is doing.
             float elapsed = 0f;
             var rect = _gate.rectTransform;
 
@@ -418,7 +400,7 @@ namespace JndUfo
                     ApplyVeil();
                 }
 
-                // GO!/TRY AGAIN! stand at full strength and need no per-frame colour work.
+                // GO! stands at full strength and needs no per-frame colour work.
                 if (_pulseHold || _textFollowsVeil) ApplyGateText();
             }
 
@@ -448,19 +430,17 @@ namespace JndUfo
             float t = Time.realtimeSinceStartup - _alertStart;
 
             // The alert never times out on its own. The punch used to expire after ~1.1s and
-            // revert to "SPOT THE STUTTER" while the participant was still deciding, which is
+            // revert to the standing prompt while the participant was still deciding, which is
             // worse than useless: the instruction was being replaced by the wrong instruction at
             // almost exactly the moment they acted on it. Only two things end it, and neither is
             // a timer:
             //
-            //   the window closing   ReleaseAlertHint — shockwave only. The line is the cue for
-            //                        the window, so it leaves with the window and the standing
-            //                        prompt comes back until the next presentation.
+            //   a release            ReleaseAlertHint — the standing prompt comes back until the
+            //                        next trigger.
             //   the trial ending     HideIdleHint empties _idleText, and the line clears.
             //
-            // Both wait for the punch to have been readable first, or a participant who answers
-            // on the stutter frame — or a window shorter than the punch — would never get to read
-            // what they were answering.
+            // Both wait for the punch to have been readable first, or a participant who fires on
+            // the crossing frame would never get to read what they were answering.
             if (_alertReleased && t >= HintPunchMinSec) { SettleAlertToIdle(); return; }
             if (t >= _alertHold && string.IsNullOrEmpty(_idleText)) { HideHint(); return; }
 
@@ -530,7 +510,7 @@ namespace JndUfo
                               new Color(0.95f, 0.96f, 1f));
 
             // Top-aligned in a tall box rather than centred in a short one: the body is a single
-            // line for most prompts but four for the shockwave task instructions, and text that
+            // line for some prompts but several for the task instructions, and text that
             // grows around its own centre would climb into the title as it got longer. Anchored to
             // its top edge, every prompt starts at the same place and simply runs further down.
             _body = MakeText(_root.transform, "Body", "", 40f, FontStyles.Normal,

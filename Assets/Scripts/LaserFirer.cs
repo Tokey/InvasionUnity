@@ -29,15 +29,9 @@ namespace JndUfo
         [Tooltip("Emission intensity multiplier for the beam on fire.")]
         [Min(0f)] public float beamFlashIntensity = 3f;
 
-        [Header("Shockwave")]
-        [Tooltip("Component that draws the shockwave blast. Auto-created on this object if left " +
-                 "empty; place one by hand to retune the look from the Inspector.")]
-        public ShockwaveCannon shockwaveCannon;
-
         [Header("Sight")]
-        [Tooltip("Draws the armed weapon's idle look on the ship between shots — the laser's " +
-                 "targeting beam or the cannon's charge arc. Auto-created on this object if left " +
-                 "empty; place one by hand to retune the look from the Inspector.")]
+        [Tooltip("Draws the laser's targeting beam on the ship between shots. Auto-created on this " +
+                 "object if left empty; place one by hand to retune the look from the Inspector.")]
         public WeaponSight sight;
 
         [Header("Input")]
@@ -55,17 +49,12 @@ namespace JndUfo
 
         public event Action<Vector3, bool> OnShotFired;
 
-        /// <summary>
-        /// Where the pointer glow is in its pulse this frame, 0 at pulseMin and 1 at pulseMax.
-        /// Published so anything else that glows with the weapon — the sight — can breathe on
-        /// the same clock rather than run a second pulse that drifts against this one.
-        /// </summary>
+        /// <summary>Where the pointer glow is in its pulse this frame, 0 at pulseMin and 1 at
+        /// pulseMax — published so the sight breathes on the same clock.</summary>
         public float PointerPulse01 { get; private set; }
 
-        /// <summary>
-        /// The muzzle flash this frame: 1 on the frame a shot fires, decaying to 0 over
-        /// fireFlashDecay exactly as the pointer's own flash does.
-        /// </summary>
+        /// <summary>The muzzle flash this frame: 1 on the frame a shot fires, decaying to 0 over
+        /// fireFlashDecay exactly as the pointer's own flash does.</summary>
         public float FireFlash01 { get; private set; }
 
         float     _lastFireTime  = -999f;
@@ -82,26 +71,14 @@ namespace JndUfo
         public void SetFiringEnabled(bool value) => _firingEnabled = value;
 
         /// <summary>
-        /// Whether the participant may act right now. This is the project's single "a trial is
-        /// live" signal — off during the reveal sequence, between phases, and once the round has
-        /// ended — so <see cref="ShockwaveTrialRunner"/> takes its trial boundaries from its
-        /// edges rather than needing every call site to remember to start and stop a clock.
+        /// Whether the participant may act right now. This is the project's single "a round is live"
+        /// signal — off during the reveal, between phases, and once the round has ended — so
+        /// <see cref="RoundClock"/> takes its round boundaries from its edges.
         /// </summary>
         public bool FiringEnabled => _firingEnabled;
 
-        /// <summary>
-        /// Which cannon is armed. Read from the block config rather than set here, so the weapon
-        /// and the staircase can never disagree about which task is being run.
-        /// </summary>
-        public WeaponKind Weapon =>
-            _perturbation != null ? _perturbation.Weapon : WeaponKind.Laser;
-
-        PerturbationController _perturbation;
-
         void Awake()
         {
-            _perturbation = FindAnyObjectByType<PerturbationController>();
-
             if (firePoint == null)
             {
                 var fp = new GameObject("FirePoint").transform;
@@ -110,16 +87,9 @@ namespace JndUfo
                 firePoint = fp;
             }
 
-            // Built up front even for a laser-only session: this project measures frame times, and
-            // creating the arc renderer and detonation pool on the first shockwave shot would land
-            // as a stutter competing with the deliberate one. A hand-placed component wins, so the
-            // look stays tunable from the Inspector.
-            if (shockwaveCannon == null) shockwaveCannon = GetComponent<ShockwaveCannon>();
-            if (shockwaveCannon == null) shockwaveCannon = gameObject.AddComponent<ShockwaveCannon>();
-
-            // Same again for the sight, and for the same reason. It lives here, on the muzzle,
-            // so the beam and the charge arc start where the shot does — and so that hiding the
-            // ship between rounds takes them with it (UfoController.SetHidden walks the children).
+            // Built up front: creating the sight's renderers on the first frame they are needed would
+            // land as a long frame. It lives here, on the muzzle, so hiding the ship between rounds
+            // takes it with it (UfoController.SetHidden walks the children).
             if (sight == null) sight = GetComponent<WeaponSight>();
             if (sight == null) sight = gameObject.AddComponent<WeaponSight>();
 
@@ -160,18 +130,6 @@ namespace JndUfo
                           || (Keyboard.current != null && Keyboard.current[altFireKey].wasPressedThisFrame);
             if (!wantsFire || Time.time - _lastFireTime < _cooldown) return;
 
-            // An anticipatory press can be swallowed whole — no blast, no score, no trial — with
-            // the trial it interrupted carrying on toward its stutter: always under
-            // EarlyFirePolicy.IgnoreAndContinue, and for a second or so after any TOO EARLY press
-            // (the runner's early lockout). The cooldown is still spent so the press cannot
-            // simply be repeated every frame until the window happens to open.
-            if (ShockwaveTrialRunner.Instance != null &&
-                ShockwaveTrialRunner.Instance.ShouldSwallowFire())
-            {
-                _lastFireTime = Time.time;
-                return;
-            }
-
             Fire();
         }
 
@@ -184,8 +142,8 @@ namespace JndUfo
                                                   * Time.deltaTime);
             float intensity = Mathf.Max(pulse, _flashCurrent);
 
-            // Published before the early-out below: the sight breathes on this even when the
-            // scene has no pointer renderer to glow.
+            // Published before the early-out below: the sight breathes on this even when the scene
+            // has no pointer renderer to glow.
             PointerPulse01 = phase;
             FireFlash01    = fireFlashIntensity > 0f ? Mathf.Clamp01(_flashCurrent / fireFlashIntensity) : 0f;
 
@@ -204,16 +162,6 @@ namespace JndUfo
             // sight see it a frame after the shot beam appears.
             FireFlash01   = 1f;
 
-            if (sight != null) sight.NotifyFired(Weapon);
-
-            if (Weapon == WeaponKind.Shockwave) FireShockwave();
-            else                                  FireLaser();
-        }
-
-        void FireLaser()
-        {
-            Debug.Log($"[LaserFirer] Fire() laser on {name}");
-
             Vector3 origin = firePoint.position;
             Vector3 dir    = fireDirection.sqrMagnitude > 1e-6f ? fireDirection.normalized : Vector3.up;
             float   length = beamLength;
@@ -230,41 +178,17 @@ namespace JndUfo
             if (_beamCoroutine != null) StopCoroutine(_beamCoroutine);
             _beamCoroutine = StartCoroutine(AnimateBeam(origin, dir, length));
 
-            // Fired before OnShotFired so the muzzle sound leads the impact sounds that
-            // GameManager triggers off the same shot.
+            // Fired before OnShotFired so the muzzle sound leads the impact sounds that GameManager
+            // triggers off the same shot.
             if (AudioManager.Instance != null) AudioManager.Instance.PlayLaserFire();
 
             OnShotFired?.Invoke(endPt, hit);
-        }
-
-        /// <summary>
-        /// The shockwave cannon. No beam and no raycast: the blast levels the whole plane, so there
-        /// is nothing to aim and nothing for a shot to land on or miss. The reported landing point
-        /// is the UFO's own position on the play plane — the trial is decided by timing, but the
-        /// logs still record where the participant happened to be, and the reveal's fog shockwave
-        /// needs a centre to blow outward from.
-        ///
-        /// The blast plays even when the press was anticipatory: the cannon really did fire, it
-        /// just fired at nothing, and seeing the field levelled a beat before the stutter is the
-        /// clearest possible feedback about what went wrong.
-        /// </summary>
-        void FireShockwave()
-        {
-            Debug.Log($"[LaserFirer] Fire() shockwave on {name}");
-
-            Vector3 origin = firePoint.position;
-
-            if (shockwaveCannon != null) shockwaveCannon.Fire(origin);
-            else Debug.LogWarning("[LaserFirer] Shockwave weapon selected but no ShockwaveCannon — firing silently.");
-
-            OnShotFired?.Invoke(new Vector3(origin.x, origin.y, origin.z), false);
         }
 
         // Beam spans firePoint → hit point at full length, holds position, emission fades out.
         // Unity Cylinder height = scale.y * 2, so scale.y = length / 2.
         IEnumerator AnimateBeam(Vector3 origin, Vector3 dir, float length)
         {
-            // Set full-length position once — cylinder center is the midpoint
             beamRenderer.transform.position   = origin + dir * (length * 0.5f);
             beamRenderer.transform.rotation   = Quaternion.FromToRotation(Vector3.up, dir);
             beamRenderer.transform.localScale = new Vector3(beamWidth, Mathf.Max(0.01f, length * 0.5f), beamWidth);

@@ -59,6 +59,8 @@ namespace JndUfo.EditorTools
             CopyConfigFile(destDir, LatinSquare.FileName,
                             "The build will generate a default balanced square on first run, which " +
                             "is NOT the same design if this one was edited by hand.");
+            CopyConfigFile(destDir, PracticeRounds.FileName,
+                            "The build will write the default five practice rounds on first run.");
 
             CopyAnalysisScript(buildDir);
 

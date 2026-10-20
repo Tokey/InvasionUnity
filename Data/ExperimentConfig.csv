@@ -1,5 +1,13 @@
-weapon,unityApplicationFps,practiceStuttersMs,practiceRepeatStuttersMs,swSpikeDelayMinSec,swSpikeDelayMaxSec,swWindowSec,swRespikeMinSec,swRespikeMaxSec,swMaxEarlyPerRound,maxSpikesPerRound,roundTimeoutSec,hitPoints,missPoints,stimMinMs,stimMaxMs,stimCount,threshMinMs,threshMaxMs,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD
-shockwave,60,450;300;200;100;50,450,1,3.5,0.9,1,3.5,1,5,0,100,-10,1,250,40,1,250,60,1,7,10,0,0.06,4,0.36,50,8,6
-laser,60,450;300;200;100;50,450,1.5,3,0.4,1.5,3,1,10,15,100,-10,1,250,40,1,250,60,1,7,10,0,0.06,4,0.244,50,8,6
-laser,500,450;300;200;100;50,450,1.5,3,0.4,1.5,3,1,10,15,100,-10,1,250,40,1,250,60,1,7,10,0,0.06,4,0.244,50,8,6
-shockwave,500,450;300;200;100;50,450,1,3.5,0.9,1,3.5,1,5,0,100,-10,1,250,40,1,250,60,1,7,10,0,0.06,4,0.36,50,8,6
+# Frame-rate JND study: one row per block. The row number is the setting's ID (blockIndex in the
+# logs); the order a participant plays them in comes from LatinSquare.csv. Lists inside one cell
+# use ';'. Lines starting with '#' are ignored. Every column is explained in README.md.
+#   direction     down = the altered side runs at baseFps - diff, up = baseFps + diff
+#   diff grid     minDiffFps, minDiffFps + diffStepFps, ... up to maxDiffFps (exactly even steps)
+#   alteredSide   random (drawn every round) | left | right  (side of the hidden tower)
+#   frameLimiter  precise (busy-wait, frame times within microseconds) | unity (Application.targetFrameRate)
+# Bases: the two most common refresh rates (60, 144) and 500, for a 500 Hz display. Each block
+# searches down to about a sixth of its base: 10-59, 24-142 and 85-495 fps.
+baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,maxCrossingsPerRound,roundTimeoutSec,hitPoints,missPoints,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD
+60,down,50,1,1,random,precise,0,15,100,-10,50,1,7,10,0,0.06,4,0.244,50,8,2
+144,down,120,2,2,random,precise,0,15,100,-10,50,1,7,10,0,0.06,4,0.244,50,8,5
+500,down,415,5,5,random,precise,0,15,100,-10,50,1,7,10,0,0.06,4,0.244,50,8,17

@@ -124,24 +124,18 @@ namespace JndUfo
                  "camera rather than an absolute world X.")]
         public bool fogFollowsCamera = true;
 
-        [Header("Fog Weapon Tint")]
-        [Tooltip("Give each weapon's blocks their own colour of smoke, so the field the participant " +
-                 "is looking at says which task is running — the same signal the UFO's livery " +
-                 "carries. Off leaves the prefab's own fog colour alone.")]
-        public bool tintFogByWeapon = true;
+        [Header("Fog Tint")]
+        [Tooltip("Tint the ground fog toward the colour below, to sit with the laser's teal. Off " +
+                 "leaves the prefab's own fog colour alone.")]
+        public bool tintFog = true;
 
-        [Tooltip("Laser blocks. Cool, to sit with the laser's teal.")]
-        public Color laserFogTint = new Color(0.62f, 0.86f, 0.95f, 1f);
+        [Tooltip("The fog's tint. Cool, to sit with the laser's teal.")]
+        public Color fogTint = new Color(0.62f, 0.86f, 0.95f, 1f);
 
-        [Tooltip("Shockwave blocks. Violet, to sit with the cannon's arcs.")]
-        public Color shockwaveFogTint = new Color(0.78f, 0.68f, 0.98f, 1f);
-
-        [Tooltip("How far the tint pulls the fog's own colour, 0-1.\n\n" +
-                 "Deliberately partial, and deliberately a HUE change at matched brightness rather " +
-                 "than a new colour outright. The fog is what hides the tower on a laser block, so " +
-                 "how much light it puts out is part of that block's difficulty — two weapons whose " +
-                 "fog differed in brightness would differ in task difficulty for a reason that has " +
-                 "nothing to do with the condition. Alpha is never touched: fogDensity alone owns it.")]
+        [Tooltip("How far the tint pulls the fog's own colour, 0-1. Deliberately partial, and a HUE " +
+                 "change at matched brightness: the fog is what hides the tower, so how much light " +
+                 "it puts out is part of the task's difficulty. Alpha is never touched: fogDensity " +
+                 "alone owns it.")]
         [Range(0f, 1f)] public float fogTintStrength = 0.5f;
 
         [Header("Fog Shockwave")]
@@ -188,9 +182,8 @@ namespace JndUfo
         public Color towerLaserColor = new Color(0.2f, 1f, 0.5f, 1f);
         [Tooltip("Width of the beam in world units.")]
         public float towerLaserWidth = 0.06f;
-        [Tooltip("Raise the beam over the tower as the fog clears. Set per block — off for the " +
-                 "shockwave cannon, whose reveal plays ShockwaveAftershock instead (see " +
-                 "PerturbationController.ApplyTaskParams). Also gates the hit-zone lines.")]
+        [Tooltip("Raise the beam over the tower as the fog clears, marking exactly where the " +
+                 "frame-rate boundary was. Also gates the hit-zone lines.")]
         public bool showTowerBeam = true;
 
         [Header("Hit Zone Visual")]
@@ -212,7 +205,7 @@ namespace JndUfo
         public float zoneSpreadDuration = 0.35f;
 
         [Header("Debug")]
-        [Tooltip("Always show the tower and skyline for testing. Hold X to temporarily hide them.")]
+        [Tooltip("Keep the cloud cover over the tower lifted, for testing. Hold X to drop it again.")]
         public bool debugForceVisible = true;
 
         // ── Private state ────────────────────────────────────────────────────
@@ -234,10 +227,15 @@ namespace JndUfo
         ParticleSystem[] _fogSystems;
         float            _currentFogAlpha = 1f;
 
-        // Each fog system's own RGB, captured the first time a weapon tint is applied so every
-        // later block tints the prefab's colour rather than the previous block's tint.
+        // Each fog system's own RGB, captured the first time the tint is applied so it always
+        // tints the prefab's colour rather than a previous tint.
         Color[]          _fogBaseColors;
-        WeaponKind?      _fogTintedFor;
+        bool             _fogTintRequested;
+
+        // The cloud state debugForceVisible last asked for. Only a CHANGE is applied: Reveal() and
+        // Obscure() start a fade coroutine, and starting one every frame was a steady stream of
+        // garbage — collections that land as long frames in a study of frame rates.
+        bool?            _debugCloudShown;
 
         // Fog shockwave — world-space X/Y/Z of the most recent shot, and per-particle tracking
         // of everyone caught in the blast (keyed by particle.randomSeed, which stays constant for
@@ -350,8 +348,10 @@ namespace JndUfo
         {
             if (!debugForceVisible) return;
 
-            bool hideDebug = Keyboard.current != null && Keyboard.current.xKey.isPressed;
-            SetDebugVisible(!hideDebug);
+            bool show = !(Keyboard.current != null && Keyboard.current.xKey.isPressed);
+            if (_debugCloudShown == show) return;
+            _debugCloudShown = show;
+            SetDebugVisible(show);
         }
 
         // ── Tower movement ───────────────────────────────────────────────────
@@ -391,6 +391,25 @@ namespace JndUfo
                 }
             }
 
+            PlaceTowerAt(x);
+        }
+
+        /// <summary>
+        /// Puts the tower at a given fraction of the screen's width (0 = left edge, 1 = right),
+        /// with no spawn-range limits. For the command-line checks (<see cref="QaRunner"/>), which
+        /// need the tower in exact spots — the study itself only ever uses
+        /// <see cref="MoveTowerToRandomPosition"/>.
+        /// </summary>
+        public void MoveTowerToViewportX(float viewportX)
+        {
+            SyncZ();
+            Camera cam = rig != null ? rig.ActiveCamera : Camera.main;
+            float x = cam != null ? CameraRig.ViewportPointAtZ(cam, viewportX, 0.5f, fixedZ).x : 0f;
+            PlaceTowerAt(x);
+        }
+
+        void PlaceTowerAt(float x)
+        {
             Vector3 pos = new Vector3(x, groundY, fixedZ);
             if (tower != null) tower.MoveTo(pos);
             if (cloud != null) cloud.MoveOver(pos);
@@ -511,8 +530,6 @@ namespace JndUfo
         /// </summary>
         IEnumerator FogShockwaveOut(float duration)
         {
-            Debug.Log("[TowerManager] Fog shockwave: blasting fog apart from hit point.");
-
             float   fromAlpha = _currentFogAlpha;
             Vector3 hitPos    = _lastHitWorldPos;
             EnsureBlastHomeStorage();
@@ -550,8 +567,6 @@ namespace JndUfo
         /// </summary>
         IEnumerator FogShockwaveReturn(float duration)
         {
-            Debug.Log("[TowerManager] Fog shockwave: drawing fog back together.");
-
             float fromAlpha = _currentFogAlpha;
 
             float elapsed = 0f;
@@ -1044,46 +1059,6 @@ namespace JndUfo
                         if (r != null) r.enabled = true;
         }
 
-        /// <summary>
-        /// Copies the world bounds of every renderer in the skyline, the tower's included, into
-        /// <paramref name="into"/> and returns how many were written (at most its length).
-        ///
-        /// Per renderer rather than per building, so a spire or a roof block is its own box and
-        /// the tops traced from these follow the silhouette actually drawn. The tower is in the
-        /// list because it is part of that silhouette — for <see cref="ShockwaveAftershock"/>,
-        /// the only caller, it is one more roof, never a special one.
-        /// </summary>
-        public int CollectSkylineBounds(Bounds[] into)
-        {
-            int n = 0;
-
-            if (_skylineRenderers != null)
-                foreach (var rArr in _skylineRenderers)
-                {
-                    if (rArr == null) continue;
-                    foreach (var r in rArr)
-                    {
-                        if (n >= into.Length) return n;
-                        if (IsDrawnSolid(r)) into[n++] = r.bounds;
-                    }
-                }
-
-            if (tower != null && tower.renderers != null)
-                foreach (var r in tower.renderers)
-                {
-                    if (n >= into.Length) return n;
-                    if (IsDrawnSolid(r)) into[n++] = r.bounds;
-                }
-
-            return n;
-        }
-
-        // Meshes only: a particle or trail renderer in a building prefab has bounds that say
-        // nothing about where its roof is.
-        static bool IsDrawnSolid(Renderer r) =>
-            r != null && r.enabled && r.gameObject.activeInHierarchy &&
-            (r is MeshRenderer || r is SkinnedMeshRenderer);
-
         // ── Visibility helpers ───────────────────────────────────────────────
 
         public void ShowTower()
@@ -1131,10 +1106,8 @@ namespace JndUfo
             _fogBaseColors = null;
             ConfigureFogBudget();
 
-            // A weapon asked for its tint before the fog existed — Start order between two
-            // components is not guaranteed, and the director pushes the block's livery early.
-            // Re-apply it now rather than let the first block run in the prefab's colour.
-            if (_fogTintedFor.HasValue) ApplyWeaponFog(_fogTintedFor.Value);
+            // The tint is applied once the fog systems exist, whichever came first.
+            if (tintFog || _fogTintRequested) ApplyFogTint();
         }
 
         /// <summary>
@@ -1218,26 +1191,23 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// Recolours the ground fog for the armed weapon. Called once per block by
-        /// ExperimentDirector, alongside the UFO's livery — see UfoController.ApplyWeaponLook.
-        ///
-        /// Hue at matched brightness, never a change of density: the fog IS the laser task's
-        /// occluder, so its opacity is part of that block's difficulty and belongs to fogDensity
+        /// Recolours the ground fog toward <see cref="fogTint"/>. Hue at matched brightness, never a
+        /// change of density: the fog IS the task's occluder, so its opacity belongs to fogDensity
         /// alone. Only the colour channel moves, and only part-way (fogTintStrength), so the bank
         /// still reads as smoke rather than as a coloured filter over the screen.
         ///
-        /// Safe before the fog exists — the systems are cached in Start, and a call that arrives
-        /// first simply records the weapon and is re-applied when ConfigureFogBudget runs.
+        /// Safe before the fog exists — a call that arrives first is re-applied when the fog
+        /// systems are cached.
         /// </summary>
-        public void ApplyWeaponFog(WeaponKind weapon)
+        public void ApplyFogTint()
         {
-            _fogTintedFor = weapon;
-            if (!tintFogByWeapon || _fogSystems == null) return;
+            _fogTintRequested = true;
+            if (!tintFog || _fogSystems == null) return;
 
             if (_fogBaseColors == null || _fogBaseColors.Length != _fogSystems.Length)
                 CacheFogBaseColors();
 
-            Color tint = weapon == WeaponKind.Shockwave ? shockwaveFogTint : laserFogTint;
+            Color tint = fogTint;
 
             for (int i = 0; i < _fogSystems.Length; i++)
             {
@@ -1365,9 +1335,6 @@ namespace JndUfo
         /// of them ships with `looping` on. Clearing it on the root alone (which is what this used
         /// to do) leaves the children emitting forever, so one impact keeps going long after the
         /// blast that caused it. Walks the whole hierarchy instead.
-        ///
-        /// Public and static because <see cref="ShockwaveCannon"/> pools copies of these same two
-        /// prefabs and needs the identical treatment.
         /// </summary>
         public static void MakeOneShot(ParticleSystem ps)
         {
@@ -1533,13 +1500,11 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// Points the fog shockwave at <paramref name="p"/> without showing an impact burst there.
-        ///
-        /// For the shockwave weapon: the cannon has no landing point to mark — it levels the whole
-        /// plane, and its own chain of detonations has already shown that — but the fog bank still
-        /// has to be blown open from somewhere, and the UFO's position is where the blast started.
+        /// Points the fog blast at <paramref name="p"/> without showing an impact burst there — for a
+        /// round that ran out with no shot. There is no landing point to mark, but the fog bank still
+        /// has to be blown open from somewhere, and the UFO's position is the natural centre.
         /// </summary>
-        public void SetFogShockwaveOrigin(Vector3 p)
+        public void SetFogBlastOrigin(Vector3 p)
         {
             float hitY = tower != null ? tower.transform.position.y : groundY;
             _lastHitWorldPos = new Vector3(p.x, hitY, fixedZ);

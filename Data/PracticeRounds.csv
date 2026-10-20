@@ -1,0 +1,10 @@
+# The session's practice phase: one row per round, played in this order before
+# the first main block. Each round shows these two frame rates on either side of
+# the hidden tower; which side gets the lower one is random. Practice never feeds
+# QUEST+. Delete every row to skip practice.
+round,fpsA,fpsB
+1,30,60
+2,60,500
+3,60,144
+4,144,500
+5,240,500

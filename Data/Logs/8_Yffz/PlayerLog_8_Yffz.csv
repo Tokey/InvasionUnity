@@ -1,0 +1,1 @@
+sessionId,runId,blockIndex,blockOrdinal,latinRow,latinOrder,baseFps,direction,frameLimiter,phase,phaseStartIso,roundNumber,frameIndex,timeSinceStartSec,unscaledDeltaMs,targetFps,pacedBy,diffFps,alteredSide,side,crossed,mouseX,mouseY,mouseDeltaX,mouseDeltaY,ufoX,ufoY,towerX,leftButtonDown,leftButtonPressed,fireKeyDown,shotFired,shotHitX

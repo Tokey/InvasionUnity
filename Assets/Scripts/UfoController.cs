@@ -28,22 +28,17 @@ namespace JndUfo
         [Tooltip("World Z the UFO is locked to. Must match TowerManager.fixedZ.")]
         public float fixedZ = 0f;
 
-        [Header("Weapon Livery")]
-        [Tooltip("Recolour the UFO to match the armed weapon, so a participant can tell at a " +
-                 "glance which task they are doing without reading the HUD chip. Off leaves the " +
-                 "model's own colours alone.")]
-        public bool tintByWeapon = true;
+        [Header("Livery")]
+        [Tooltip("Recolour the UFO in the laser's teal, so the ship, its sight and its shot read as " +
+                 "one weapon. Off leaves the model's own colours alone.")]
+        public bool tintHull = true;
 
-        [Tooltip("Laser blocks. Matched to the laser's own teal so the ship and the beam read as " +
-                 "one weapon.")]
-        public Color laserTint = new Color(0.35f, 1f, 0.85f, 1f);
-
-        [Tooltip("Shockwave blocks. Matched to ShockwaveCannon's arc violet, for the same reason.")]
-        public Color shockwaveTint = new Color(0.62f, 0.35f, 1f, 1f);
+        [Tooltip("The livery colour. WeaponSight takes the sight's colour from here.")]
+        public Color liveryTint = new Color(0.35f, 1f, 0.85f, 1f);
 
         [Tooltip("How far the tint pulls the model's base colour, 0-1. The hull is textured, and " +
                  "a full-strength tint flattens it into a solid slab of colour; the glow below is " +
-                 "what actually carries the weapon's identity.")]
+                 "what actually carries the colour.")]
         [Range(0f, 1f)] public float tintStrength = 0.55f;
 
         [Tooltip("Also recolour the emissive glow. This is the part that reads from across the " +
@@ -53,8 +48,8 @@ namespace JndUfo
         [Tooltip("Ceiling on the glow's HDR brightness — the model is authored with its emission " +
                  "peaking near 69, and against this scene's bloom that is not a lit panel, it is " +
                  "a white blob with the hull's silhouette burnt out of the middle of it. The UFO " +
-                 "has to read as a SHAPE: it is the thing the participant tracks through the " +
-                 "stutter, and a shape whose outline is lost to bloom cannot be tracked.\n\n" +
+                 "has to read as a SHAPE: its motion across the tower is the stimulus, and a " +
+                 "shape whose outline is lost to bloom shows that motion less clearly.\n\n" +
                  "A cap, not a setting — a part is only ever dimmed to this, never brightened to " +
                  "it, so a panel that glows faintly keeps glowing faintly. 0 leaves the material's " +
                  "own brightness alone.")]
@@ -83,7 +78,7 @@ namespace JndUfo
         Vector2            _prevDelayedPos;
         bool               _initialized;
 
-        // Weapon livery. The tint goes on through a MaterialPropertyBlock rather than by touching
+        // Livery. The tint goes on through a MaterialPropertyBlock rather than by touching
         // the material: renderer.material would instantiate a private copy per renderer, per run,
         // and the originals are shared assets the Editor would then keep dirty. The block is
         // reused, so applying a livery allocates nothing after the first block.
@@ -96,7 +91,7 @@ namespace JndUfo
         Color[]               _emissionOriginals;
         bool[]                _hasBaseColor;
         bool[]                _hasEmission;
-        WeaponKind?           _tintedFor;
+        bool                  _liveryApplied;
 
         static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         static readonly int ColorId     = Shader.PropertyToID("_Color");
@@ -116,6 +111,10 @@ namespace JndUfo
             _input = GetComponent<InputLatencyBuffer>();
             if (rig == null) rig = CameraRig.Instance;
         }
+
+        // Start, not Awake: the tint cache walks the ship's renderers, and the muzzle's own children
+        // are only created in LaserFirer's Awake.
+        void Start() => ApplyLivery();
 
         void Update()
         {
@@ -229,45 +228,36 @@ namespace JndUfo
             }
         }
 
-        // ── Weapon livery ────────────────────────────────────────────────────
+        // ── Livery ───────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Repaints the ship in the armed weapon's colour. Called once per block by
-        /// ExperimentDirector, before the block's first prompt.
+        /// Paints the ship in the livery colour and caps its glow. Called once from Start; repeated
+        /// calls are no-ops.
         ///
-        /// The two weapons are different tasks that want opposite behaviour, and the participant
-        /// has to hold that distinction for a whole block. The HUD chip names the weapon, but the
-        /// chip is a small thing at the edge of the screen and the ship is what the eye is already
-        /// on — so giving the ship the weapon's colour puts the answer where they are looking.
+        /// The ceiling matters more than the colour: the model ships with its emission peaking near
+        /// 69, which blooms into a white blob and takes the hull's outline with it. The UFO is the
+        /// thing the participant watches move across the boundary, and the smoothness of that motion
+        /// IS the stimulus — a shape whose outline is lost to bloom shows its motion less clearly. A
+        /// part that never glowed is left alone.
         ///
-        /// Between the two weapons it is a colour change and nothing else: same model, same size,
-        /// same glow brightness. The stutter's detectability must not differ between blocks for
-        /// any reason but the condition, so the hue turns and the emissive INTENSITY does not —
-        /// both weapons land on the same <see cref="emissionCeiling"/>.
-        ///
-        /// That ceiling is a separate concern from the livery and applies either way: the model
-        /// ships with its emission peaking near 69, which blooms into a white blob and takes the
-        /// hull's outline with it. The UFO is the thing the participant tracks through the
-        /// stutter, so its silhouette has to survive. A part that never glowed is left alone.
-        ///
-        /// Applied through a MaterialPropertyBlock, and only to mesh renderers — the beam, the
-        /// shock arcs and any particle child keep the colours their own scripts drive.
+        /// Applied through a MaterialPropertyBlock, and only to mesh renderers — the beam and any
+        /// particle child keep the colours their own scripts drive.
         /// </summary>
-        public void ApplyWeaponLook(WeaponKind weapon)
+        public void ApplyLivery()
         {
-            if (_tintedFor == weapon) return;
-            // The glow ceiling is about legibility, not livery, so it still applies with the
-            // per-weapon tint switched off. With both off there is nothing to do.
-            if (!tintByWeapon && emissionCeiling <= 0f) return;
+            if (_liveryApplied) return;
+            // The glow ceiling is about legibility, not livery, so it still applies with the tint
+            // switched off. With both off there is nothing to do.
+            if (!tintHull && emissionCeiling <= 0f) return;
 
             EnsureTintCache();
             if (_tintRenderers.Length == 0) return;
 
-            _tintedFor = weapon;
-            Color tint = weapon == WeaponKind.Shockwave ? shockwaveTint : laserTint;
+            _liveryApplied = true;
+            Color tint = liveryTint;
 
             // The hue, at unit brightness. Multiplying an HDR emission by this preserves its
-            // magnitude, which is what stops one weapon's ship from simply being brighter.
+            // magnitude, so the livery changes the colour of the glow and never its brightness.
             float peak = Mathf.Max(tint.r, Mathf.Max(tint.g, tint.b));
             Color unit = peak > 0.0001f ? new Color(tint.r / peak, tint.g / peak, tint.b / peak, 1f)
                                         : Color.white;
@@ -279,7 +269,7 @@ namespace JndUfo
 
                 r.GetPropertyBlock(_tintBlock);
 
-                if (tintByWeapon && _hasBaseColor[i])
+                if (tintHull && _hasBaseColor[i])
                 {
                     Color b = _baseColorOriginals[i];
                     Color t = Color.Lerp(b, tint, tintStrength);
@@ -303,9 +293,9 @@ namespace JndUfo
                             ? Mathf.Min(original, emissionCeiling)
                             : original;
 
-                        // The weapon's hue, or the material's own — either way at unit brightness,
+                        // The livery hue, or the material's own — either way at unit brightness,
                         // so `glow` alone decides how hot it burns.
-                        Color hue = tintByWeapon && tintEmission
+                        Color hue = tintHull && tintEmission
                             ? unit
                             : new Color(e.r / original, e.g / original, e.b / original, 1f);
 
