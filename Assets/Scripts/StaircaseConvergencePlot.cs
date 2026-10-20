@@ -5,7 +5,7 @@ namespace JndUfo
 {
     /// <summary>
     /// Live debug overlay: plots the QUEST+ threshold estimate (theta-hat) and its
-    /// uncertainty band (+/- posterior SD) against trial number as the FPS-difference staircase runs,
+    /// uncertainty band (+/- posterior SD) against trial number as the FT staircase runs,
     /// so convergence is visible during piloting.
     ///
     /// showPlot defaults to OFF. Leave it off for real data-collection sessions -- watching
@@ -130,10 +130,10 @@ namespace JndUfo
             var rect = new Rect(screenPosition.x, screenPosition.y, size.x, size.y);
             GUI.DrawTexture(rect, _tex);
             GUI.Label(new Rect(rect.x, rect.y - 18, rect.width, 18),
-                $"FPS JND convergence -- trial {_lastTrialCount}/{_xMaxTrials}");
-            GUI.Label(new Rect(rect.x, rect.yMax + 2, rect.width * 0.5f, 18), $"{_yMin:0} fps");
+                $"FT JND convergence -- trial {_lastTrialCount}/{_xMaxTrials}");
+            GUI.Label(new Rect(rect.x, rect.yMax + 2, rect.width * 0.5f, 18), $"{_yMin:0} ms");
             GUI.Label(new Rect(rect.xMax - rect.width * 0.5f, rect.yMax + 2, rect.width * 0.5f, 18),
-                $"{_yMax:0} fps", new GUIStyle(GUI.skin.label) { alignment = TextAnchor.UpperRight });
+                $"{_yMax:0} ms", new GUIStyle(GUI.skin.label) { alignment = TextAnchor.UpperRight });
         }
     }
 }

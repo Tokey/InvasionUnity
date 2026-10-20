@@ -1,8 +1,5 @@
 # JND UFO — skeleton setup
 
-> **Outdated.** This page describes an early skeleton of the project. The study is now a
-> frame-rate JND; see `README.md` at the repo root for the current setup, config and logs.
-
 All scripts are in the `JndUfo` namespace, so they reference each other without `using`
 statements. Drop the `Scripts` folder into `Assets/` and the three PNGs into `Assets/Textures/`.
 

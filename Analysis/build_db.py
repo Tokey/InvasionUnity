@@ -15,15 +15,10 @@ Schema
     shot          one row per trial
     frame         one row per rendered frame
     stutter       one row per delivered stutter, exploded out of shot.stuttersMs
-                  (stutter-study logs only - the frame-rate study has no stutters)
 
 Hoisting the constants matters more than it looks. On a 500 FPS block the frame log
-repeats the same identity columns and the same 33-character phaseStartIso across
+repeats the same 20 cfg_* values and the same 33-character phaseStartIso across
 ~117,000 rows; phaseStartIso alone is several MB of pure repetition per session.
-
-Both generations of log are understood: the frame-time-stutter study (unityApplicationFps,
-weapon, weaponRun, stuttersMs, spikeFired) and the frame-rate study that replaced it
-(baseFps, direction, frameLimiter, diffFps, pacedBy, crossed).
 
 Nothing is lost. The views v_session, v_shot and v_frame join it all back on, so
 they hand you the exact flat shape the CSV has.
@@ -59,17 +54,13 @@ LOGS = {
 # Constant across every row of a (session, block, phase) group, so they are stored
 # once in `block` rather than repeated on every fact row.
 #
-# blockOrdinal / latinRow / latinOrder are the counterbalancing: which position in THIS
-# session's order the block was played at, which row of Data/LatinSquare.csv the session
-# drew, and the whole order that produced. blockIndex stays the key because it identifies
-# the SETTING; these say when it was met.
-#
-# baseFps / direction / frameLimiter define a frame-rate-study block. The stutter study's
-# unityApplicationFps / testMode / weapon / weaponRun stay listed so its logs still load;
-# a column a file does not carry is simply NULL.
+# blockOrdinal / latinRow / latinOrder / weaponRun are the counterbalancing: which
+# position in THIS session's order the block was played at, which row of
+# Data/LatinSquare.csv the session drew, the whole order that produced, and whether
+# this was the participant's first or second block with that weapon. blockIndex stays
+# the key because it identifies the SETTING; these say when it was met.
 BLOCK_KEY = ("sessionId", "blockIndex", "phase")
-BLOCK_ATTRS = ("baseFps", "direction", "frameLimiter",
-               "unityApplicationFps", "testMode", "closeRadius", "weapon", "phaseStartIso",
+BLOCK_ATTRS = ("unityApplicationFps", "testMode", "closeRadius", "weapon", "phaseStartIso",
                "blockOrdinal", "latinRow", "latinOrder", "weaponRun")
 
 # Written by CsvTable.F for a float.NaN. SQL wants a NULL, not the string "NaN" -
@@ -77,8 +68,8 @@ BLOCK_ATTRS = ("baseFps", "direction", "frameLimiter",
 NULLS = {"", "nan", "NaN", "NAN", "-nan", "Infinity", "-Infinity", "∞"}
 
 BOOL_COLUMNS = {"isHit", "spikeFired", "shotFired", "leftButtonDown",
-                "leftButtonPressed", "fireKeyDown", "crossed",
-                # round clock
+                "leftButtonPressed", "fireKeyDown",
+                # shockwave / round clock
                 "playerFired", "countedByStaircase", "windowOpen", "roundEnded"}
 
 
@@ -152,9 +143,6 @@ def create_block_table(con, cfg_columns):
             sessionId           INTEGER NOT NULL,
             blockIndex          INTEGER NOT NULL,
             phase               TEXT    NOT NULL,
-            baseFps             TEXT,
-            direction           TEXT,
-            frameLimiter        TEXT,
             unityApplicationFps TEXT,
             testMode            TEXT,
             closeRadius         REAL,
@@ -391,7 +379,6 @@ def build_indexes(con):
         add("ix_frame_time", "frame", ["block_id", time_col])
         add("ix_frame_shot", "frame", ["block_id", time_col], where=("shotFired", 1))
         add("ix_frame_spike", "frame", ["block_id", time_col], where=("spikeFired", 1))
-        add("ix_frame_cross", "frame", ["block_id", time_col], where=("crossed", 1))
 
     add("ix_stutter_shot", "stutter", ["shot_id"])
     add("ix_stutter_dur", "stutter", ["durationMs"])
@@ -521,50 +508,19 @@ def run_query(db_path, sql):
 SCHEMA_HELP = """
 Tables
   block        one row per (sessionId, blockIndex, phase). Holds everything constant
-               across a row group: cfg_* settings, baseFps, direction, frameLimiter,
+               across a row group: cfg_* settings, unityApplicationFps, testMode,
                closeRadius, phaseStartIso, and the counterbalancing - blockOrdinal,
-               latinRow, latinOrder. blockIndex is WHICH setting (its row in
-               ExperimentConfig.csv); blockOrdinal is WHEN in the session it ran.
-               (Stutter-study logs fill unityApplicationFps / testMode / weapon /
-               weaponRun instead.)
+               latinRow, latinOrder, weaponRun. blockIndex is WHICH setting (its row
+               in ExperimentConfig.csv); blockOrdinal is WHEN in the session it ran.
   session_log  one row per block - the summary metrics
-  shot         one row per round
+  shot         one row per trial
   frame        one row per rendered frame
-  stutter      stutter-study logs only: one row per delivered stutter
+  stutter      one row per delivered stutter (shot_id, ordinal, durationMs)
 
 Views - the flat CSV shape, cfg_* and all
   v_session, v_shot, v_frame
 
-Examples (frame-rate study)
-
-  -- threshold per block, as a difference and as the altered side's frame rate
-  SELECT b.sessionId, b.blockIndex, b.baseFps, b.direction, b.blockOrdinal,
-         s.endReason, s.staircaseTrials,
-         ROUND(s.jndDiffFps, 1) AS jndDiffFps, ROUND(s.jndAlteredFps, 1) AS jndAlteredFps,
-         ROUND(s.sd, 2) AS sd
-  FROM session_log s JOIN block b ON b.block_id = s.block_id
-  ORDER BY b.sessionId, b.blockOrdinal;
-
-  -- was the stimulus delivered? target vs measured, per round
-  SELECT b.baseFps, s.roundNumber, s.diffFps, s.alteredFps,
-         ROUND(s.measuredBaseFps, 1) AS measuredBase,
-         ROUND(s.measuredAlteredFps, 1) AS measuredAltered, s.lateFrames
-  FROM shot s JOIN block b ON b.block_id = s.block_id
-  WHERE b.phase = 'main' ORDER BY b.blockIndex, s.roundNumber;
-
-  -- delivered frame time by cap (pacedBy is '' between rounds)
-  SELECT b.blockIndex, f.pacedBy, f.targetFps, COUNT(*) AS frames,
-         ROUND(AVG(f.unscaledDeltaMs), 3) AS meanMs,
-         ROUND(1000.0 / f.targetFps, 3)   AS capMs
-  FROM frame f JOIN block b ON b.block_id = f.block_id
-  WHERE f.pacedBy IN ('base', 'altered')
-  GROUP BY b.blockIndex, f.pacedBy, f.targetFps ORDER BY b.blockIndex, f.targetFps;
-
-  -- every boundary crossing (uses the partial index)
-  SELECT roundNumber, timeSinceStartSec, side, diffFps, alteredSide
-  FROM v_frame WHERE crossed = 1 ORDER BY timeSinceStartSec;
-
-Examples (stutter study)
+Examples
 
   -- final threshold per block
   SELECT sessionId, blockIndex, unityApplicationFps,

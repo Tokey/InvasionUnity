@@ -29,21 +29,14 @@ public class UIManager : MonoBehaviour
     public TMP_FontAsset hudFont;
 
     [Header("Debug")]
-    [Tooltip("Show the live readout in the top-right corner: the frame rate on each side of the " +
-             "tower, which side is altered, what each side actually measured, and the QUEST+ state. " +
-             "TURN THIS OFF for anything a participant plays - it spells out the very difference " +
-             "the staircase is asking them to find, and every trial after they read it measures " +
-             "their reading rather than their perception.")]
-    public bool showDebug = true;
+    [Tooltip("Show the live staircase readout. OFF for anything a participant plays, and off by " +
+             "default for that reason: the line spells out the stutter size QUEST+ is about to " +
+             "present, the threshold estimate so far and the trial count. A participant who reads " +
+             "it is being told the answer to the question the staircase is asking, and every trial " +
+             "after that measures their reading rather than their perception.")]
+    public bool showDebug = false;
 
     public TMP_Text debugText;
-
-    [Tooltip("Re-place the debug readout as a panel in the top-right corner at startup, instead of " +
-             "the single centred line it sits at in the scene. The readout runs to five lines.")]
-    public bool layOutDebugPanel = true;
-    [Min(8f)] public float debugFontSize = 22f;
-    [Tooltip("Pixels in from the top-right corner.")]
-    [Min(0f)] public float debugMargin = 16f;
 
     /// <summary>Whether the debug readout is being drawn at all. PerturbationController checks it
     /// before building the line — the string is rebuilt on every response and once a second while
@@ -105,7 +98,7 @@ public class UIManager : MonoBehaviour
              "Practice is where the bar has to be explained — it is the first time the participant " +
              "sees one and they have no way to know what it counts. By the main run they do, and " +
              "the word is then a block of text sitting on screen for the rest of the session with " +
-             "nothing left to say.")]
+             "nothing left to say. Same reasoning as WeaponIndicator.nameDuringPracticeOnly.")]
     public bool progressLabelDuringPracticeOnly = true;
 
     [Min(6f)] public float progressLabelSize = 32f;
@@ -144,10 +137,9 @@ public class UIManager : MonoBehaviour
     [Range(0.3f, 1f)] public float tallyFillScale = 0.74f;
 
     public Color tallyHitColor  = new(0.30f, 1f, 0.45f, 1f);
-    [Tooltip("A shot that missed the tower.")]
     public Color tallyMissColor = new(1f, 0.68f, 0.2f, 1f);
-    [Tooltip("A round that ran out with no shot - its time limit, or its crossing cap.")]
-    public Color tallyRanOutColor = new(1f, 0.32f, 0.32f, 1f);
+    public Color tallyEarlyColor = new(0.65f, 0.3f, 1f, 1f);
+    public Color tallyLateColor  = new(1f, 0.32f, 0.32f, 1f);
     [Tooltip("The empty ring. Bright enough to be found against the sky, dim enough not to " +
              "compete with the filled pips beside it.")]
     public Color tallyEmptyColor = new(1f, 1f, 1f, 0.34f);
@@ -158,11 +150,26 @@ public class UIManager : MonoBehaviour
     [Range(1f, 2.5f)] public float tallyPopScale = 1.7f;
     [Min(0.05f)]      public float tallyPopSec   = 0.34f;
 
-    [Header("Ran-Out Callout")]
-    [Tooltip("The round's time limit expired with no shot fired.")]
+    [Header("Shockwave Vignette  (Violet)")]
+    public Color shockwaveFlashColor = new(0.75f, 0.45f, 1f, 1f);
+    [Range(0f, 1f)] public float shockwaveAlpha = 0.85f;
+
+    [Header("Timed Outcome Callout")]
+    [Tooltip("Fired inside the response window — the stutter was noticed in time.")]
+    public string calloutShockwaveHitText = "DESTROYED!";
+    [Tooltip("Fired before the round's first stutter, so there was nothing to answer yet. The " +
+             "round carries on.")]
+    public string calloutShockwaveEarlyText = "TOO EARLY!";
+    [Tooltip("Fired after the window had closed. The round carries on and the stutter comes again.")]
+    public string calloutShockwaveLateText = "TOO LATE!";
+    [Tooltip("The round's spike allowance was exhausted — shockwave's last window closed " +
+             "unanswered, or a laser round crossed the tower too many times.")]
+    public string calloutTimeoutText = "CHANCES MISSED!";
+    [Tooltip("The round's wall clock expired with no shot fired at all.")]
     public string calloutOutOfTimeText = "OUT OF TIME!";
-    [Tooltip("The UFO crossed the tower more times than the round allows, with no shot fired.")]
-    public string calloutCrossingCapText = "TOO MANY PASSES!";
+    [Tooltip("Early and late are both failures, but they are failures of opposite kinds. Amber " +
+             "rather than the miss red keeps them legible as 'wrong timing' rather than 'bad aim'.")]
+    public Color calloutShockwaveFailColor = new(1f, 0.68f, 0.2f, 1f);
 
     [Header("Hit / Miss Callout")]
     public string calloutHitText  = "Hit!";
@@ -199,8 +206,7 @@ public class UIManager : MonoBehaviour
     // window — oldest first, at most tallySlots long — and _tallyCounted is how many responses
     // the phase had produced when it was last appended to, which is how a new response is told
     // apart from a repeat refresh of the same one.
-    enum Pip { Hit, Miss, RanOut }
-    readonly List<Pip>  _tallyOutcomes = new List<Pip>();
+    readonly List<ShockwaveOutcome> _tallyOutcomes = new List<ShockwaveOutcome>();
     int                 _tallyCounted;
     RectTransform[]     _tallyPips;
     Image[]             _tallyRings;
@@ -210,9 +216,6 @@ public class UIManager : MonoBehaviour
 
     // The label above the progress bar, built once by ApplyProgressLayout.
     TMP_Text _progressLabel;
-
-    // A dark plate behind the debug readout, sized to it on every refresh.
-    RectTransform _debugBackdrop;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -239,11 +242,7 @@ public class UIManager : MonoBehaviour
 
         // Off before the first frame is drawn, not on the first Update — a debug line that flashes
         // up for a frame at the top of a session is still a line the participant can read.
-        if (debugText != null)
-        {
-            debugText.gameObject.SetActive(showDebug);
-            if (showDebug && layOutDebugPanel) ApplyDebugLayout();
-        }
+        if (debugText != null) debugText.gameObject.SetActive(showDebug);
 
         if (showHitMissTally) BuildTally();
         ApplyProgressLayout();
@@ -278,67 +277,10 @@ public class UIManager : MonoBehaviour
         if (_ringTex     != null) Destroy(_ringTex);
     }
 
-    /// <summary>Shows or hides the debug readout while running — the frame-rate benchmark
-    /// (<see cref="JndUfo.QaRunner"/>) times the game both ways.</summary>
-    public void SetDebugVisible(bool visible)
-    {
-        showDebug = visible;
-        if (debugText == null) return;
-        debugText.gameObject.SetActive(visible);
-        if (visible && layOutDebugPanel && _debugBackdrop == null) ApplyDebugLayout();
-        if (_debugBackdrop != null) _debugBackdrop.gameObject.SetActive(visible);
-    }
-
     public void SetDebugText(string text)
     {
         if (!showDebug || debugText == null) return;
         debugText.text = text;
-
-        if (_debugBackdrop != null)
-        {
-            Vector2 size = debugText.GetPreferredValues(text);
-            _debugBackdrop.sizeDelta = size + new Vector2(28f, 18f);
-        }
-    }
-
-    /// <summary>
-    /// Moves the scene's debug line to a panel in the top-right corner — the readout is five lines,
-    /// and the scene's slot is one auto-sized line across the bottom, where it would sit on the
-    /// progress bar. The corner is free: the tally owns the top-left, the practice banner the top
-    /// centre.
-    /// </summary>
-    void ApplyDebugLayout()
-    {
-        RectTransform rt = debugText.rectTransform;
-        rt.anchorMin = rt.anchorMax = new Vector2(1f, 1f);
-        rt.pivot            = new Vector2(1f, 1f);
-        rt.anchoredPosition = new Vector2(-debugMargin, -debugMargin);
-        rt.sizeDelta        = new Vector2(1100f, debugFontSize * 7f);
-
-        debugText.enableAutoSizing = false;
-        debugText.fontSize         = debugFontSize;
-        debugText.alignment        = TextAlignmentOptions.TopRight;
-        debugText.textWrappingMode = TextWrappingModes.NoWrap;
-        debugText.overflowMode     = TextOverflowModes.Overflow;
-        debugText.color            = new Color(0.92f, 0.97f, 1f, 0.95f);
-        debugText.raycastTarget    = false;
-
-        if (_debugBackdrop == null && rt.parent != null)
-        {
-            var go = new GameObject("DebugBackdrop", typeof(RectTransform));
-            go.transform.SetParent(rt.parent, false);
-            go.transform.SetSiblingIndex(rt.GetSiblingIndex());   // directly behind the text
-
-            _debugBackdrop = (RectTransform)go.transform;
-            _debugBackdrop.anchorMin = _debugBackdrop.anchorMax = new Vector2(1f, 1f);
-            _debugBackdrop.pivot            = new Vector2(1f, 1f);
-            _debugBackdrop.anchoredPosition = new Vector2(-debugMargin + 14f, -debugMargin + 9f);
-            _debugBackdrop.sizeDelta        = Vector2.zero;
-
-            var img = go.AddComponent<Image>();
-            img.color         = new Color(0f, 0f, 0f, 0.55f);
-            img.raycastTarget = false;
-        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────
@@ -346,6 +288,7 @@ public class UIManager : MonoBehaviour
     public void DisplayShotResult(float shotScore, float totalScore, float distance,
                                    Vector3 hitWorldPos = default, Vector3 towerWorldPos = default)
     {
+        Debug.Log($"[UIManager] shot={shotScore:0.00} total={totalScore:0.00} dist={distance:0.00}");
         RefreshScoreText();
 
         bool isMiss = scoreManager == null || shotScore < scoreManager.HitPoints;
@@ -356,17 +299,47 @@ public class UIManager : MonoBehaviour
     }
 
     /// <summary>
-    /// A round that ended with no shot — its time limit ran out, or the UFO crossed the tower too
-    /// many times. Its own wording rather than "Miss!": the participant did not aim badly, they did
-    /// not answer, and that is a different thing to correct.
+    /// The result of a response decided by timing rather than aim — every shockwave response,
+    /// and a laser round that ran out with no shot. Several failure texts rather than one: the
+    /// participant can fail by answering too early, too late, or not at all, and those are
+    /// different mistakes that need different corrections, so collapsing them into one "Miss!"
+    /// would withhold the only feedback that tells them which way to move.
     /// </summary>
-    public void DisplayOutcomeCallout(TrialOutcome outcome, float totalScore)
+    public void DisplayOutcomeCallout(ShockwaveOutcome outcome, float totalScore)
     {
+        Debug.Log($"[UIManager] timed outcome={outcome} total={totalScore:0.00}");
         RefreshScoreText();
-        TriggerMissFlash(tallyRanOutColor);
-        ShowCallout(false,
-                    outcome == TrialOutcome.CrossingCap ? calloutCrossingCapText : calloutOutOfTimeText,
-                    tallyRanOutColor);
+
+        bool detected = outcome == ShockwaveOutcome.Detected;
+
+        Color flashColor = outcome switch
+        {
+            ShockwaveOutcome.Early => tallyEarlyColor,
+            ShockwaveOutcome.Late  => tallyLateColor,
+            _                      => tallyMissColor
+        };
+
+        if (detected) TriggerHitFlash();
+        else          TriggerMissFlash(flashColor);
+
+        string text = outcome switch
+        {
+            ShockwaveOutcome.Detected => calloutShockwaveHitText,
+            ShockwaveOutcome.Early    => calloutShockwaveEarlyText,
+            ShockwaveOutcome.Late     => calloutShockwaveLateText,
+            ShockwaveOutcome.Timeout  => calloutTimeoutText,
+            _                          => calloutOutOfTimeText,
+        };
+        
+        Color outcomeColor = outcome switch
+        {
+            ShockwaveOutcome.Detected => calloutHitColor,
+            ShockwaveOutcome.Early    => tallyEarlyColor,
+            ShockwaveOutcome.Late     => tallyLateColor,
+            _                         => tallyMissColor
+        };
+        
+        ShowCallout(detected, text, outcomeColor);
     }
 
     /// <summary>
@@ -378,8 +351,8 @@ public class UIManager : MonoBehaviour
         ShowCallout(isHit, isHit ? calloutHitText : calloutMissText,
                      isHit ? calloutHitColor : calloutMissColor);
 
-    /// <summary>As above, with the wording and colour supplied — a round that ran out has its own,
-    /// and the shared beat animation should not be reimplemented for it.</summary>
+    /// <summary>As above, with the wording and colour supplied — the shockwave task has three
+    /// outcomes and the shared beat animation should not be reimplemented for them.</summary>
     public void ShowCallout(bool isHit, string text, Color color)
     {
         // The miss sting rides with the callout rather than with the rest of the shot audio in
@@ -414,6 +387,23 @@ public class UIManager : MonoBehaviour
         _calloutRect.anchoredPosition = Vector2.zero;
         _callout.transform.localScale = Vector3.one;
         _callout.enabled = false;
+    }
+
+    /// <summary>
+    /// The cannon's screen flash. Fired by <see cref="ShockwaveCannon"/> at the moment of
+    /// detonation, ahead of whichever outcome flash the trial resolves into a beat later — the
+    /// blast happens whether or not the timing was right, so the flash cannot be part of the
+    /// hit/miss feedback.
+    /// </summary>
+    public void TriggerShockwaveFlash()
+    {
+        if (_vignette == null) BuildOverlays();
+        if (_vignette == null) return;
+
+        StopFlash();
+        _vignette.color = new Color(shockwaveFlashColor.r, shockwaveFlashColor.g,
+                                     shockwaveFlashColor.b, shockwaveAlpha);
+        _flashCoroutine = StartCoroutine(VignetteRoutine());
     }
 
     public void RefreshDisplayFromManagers(ScoreManager manager)
@@ -458,8 +448,8 @@ public class UIManager : MonoBehaviour
         if (!Mathf.Approximately(_progressPeak, _progressShown)) _progressSettled = false;
     }
 
-    // Steps the progress spring. Unscaled time, like every HUD motion here, so it moves on the
-    // wall clock whatever the frame rate is doing.
+    // Steps the progress spring. Unscaled time, like every HUD motion here: a stutter is a
+    // main-thread block, and a bar that paused with it would carry the stimulus.
     void Update()
     {
         if (_progressSettled || progressFill == null) return;
@@ -490,7 +480,7 @@ public class UIManager : MonoBehaviour
         if (p.PracticeMode)
             return ExperimentDirector.Instance != null ? ExperimentDirector.Instance.PracticeProgress : 0f;
 
-        return RoundProgress.Of(p.ActiveStaircase, p.PosteriorSD);
+        return RoundProgress.Of(p.ActiveStaircase as QuestPlusStaircase, p.PosteriorSDMs);
     }
 
     // The fill is anchor-stretched to its track, so its right anchor IS the fraction — no sprite,
@@ -657,9 +647,7 @@ public class UIManager : MonoBehaviour
             if (total <= _tallyCounted) return;
             _tallyCounted = total;
 
-            _tallyOutcomes.Add(scoreManager.LastWasHit ? Pip.Hit
-                               : scoreManager.LastOutcome == TrialOutcome.Shot ? Pip.Miss
-                               : Pip.RanOut);
+            _tallyOutcomes.Add(scoreManager.LastOutcome);
             while (_tallyOutcomes.Count > tallySlots) _tallyOutcomes.RemoveAt(0);
 
             DrawTally();
@@ -691,9 +679,10 @@ public class UIManager : MonoBehaviour
             {
                 fillCol = _tallyOutcomes[i] switch
                 {
-                    Pip.Hit  => tallyHitColor,
-                    Pip.Miss => tallyMissColor,
-                    _        => tallyRanOutColor,
+                    ShockwaveOutcome.Detected => tallyHitColor,
+                    ShockwaveOutcome.Early    => tallyEarlyColor,
+                    ShockwaveOutcome.Late     => tallyLateColor,
+                    _                         => tallyMissColor
                 };
             }
             _tallyFills[i].color = fillCol;
@@ -716,8 +705,8 @@ public class UIManager : MonoBehaviour
         _tallyCoroutine = StartCoroutine(PipPopRoutine(_tallyPips[i]));
     }
 
-    // Overshoot and settle, on unscaled time like every other HUD motion here, so the pop runs on
-    // the wall clock whatever the frame rate is doing.
+    // Overshoot and settle, on unscaled time like every other HUD motion here — a stutter is a
+    // main-thread block, and anything timed off the scaled clock would carry it.
     IEnumerator PipPopRoutine(RectTransform pip)
     {
         float elapsed = 0f;
@@ -740,8 +729,9 @@ public class UIManager : MonoBehaviour
     /// <summary>
     /// Builds the strip over the score readout's slot and switches the readout itself off.
     ///
-    /// The scoreText component is disabled rather than its GameObject, so its RectTransform stays
-    /// laid out — it is the slot the strip is placed over.
+    /// The scoreText component is disabled rather than its GameObject: WeaponIndicator measures
+    /// that RectTransform to line the weapon chip up with the HUD row, and a deactivated object
+    /// is not laid out.
     /// </summary>
     void BuildTally()
     {

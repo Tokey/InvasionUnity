@@ -20,8 +20,8 @@ namespace JndUfo
     /// gives every ORDERED pair of settings equal frequency, which removes the first-order carry-over
     /// effect — the systematic part of "the block you just played changes how you play the next
     /// one". That matters here because the blocks are not interchangeable: a 60 fps block and a
-    /// 500 fps block leave the participant differently adapted. Without pairwise balance, some of
-    /// that carry-over lands on one
+    /// 500 fps block leave the participant differently adapted, and the shockwave and laser tasks
+    /// ask for opposite behaviour. Without pairwise balance, some of that carry-over lands on one
     /// setting rather than being spread across all of them, and it comes out of the wash as a
     /// difference in threshold.
     ///

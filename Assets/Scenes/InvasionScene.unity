@@ -158,8 +158,25 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b9644940935b67147a890ba4f64afa96, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::JndUfo.PerturbationController
+  testMode: 1
+  useStaircase: 1
+  useManualLevelList: 1
+  manualStartIndex: -1
+  manualReversalsToEnd: 6
+  manualReversalsToAverage: 6
+  manualMaxTrials: 60
   closeRadius: 1
   showHitZone: 1
+  fpsLeft: 10
+  fpsRight: 500
+  spikeMagnitudeMs: 100
+  spikeUseBusyWait: 1
+  earlyFirePolicy: 1
+  latencyLeftMs: 0
+  latencyRightMs: 300
+  latencyRampDuration: 0.1
+  accelerationLeft: 0
+  accelerationRight: 1
   crossingDeadZone: 0
   rig: {fileID: 330585548}
   ufoController: {fileID: 906968768}
@@ -199,17 +216,18 @@ MonoBehaviour:
   scoreManager: {fileID: 263729323}
   uiManager: {fileID: 596289077}
   perturbation: {fileID: 263729322}
-  roundClock: {fileID: 0}
-  fpsReveal: {fileID: 0}
+  shockwave: {fileID: 0}
+  weaponIndicator: {fileID: 0}
   fogRetreatDuration: 0.2
   hitDisplayDuration: 1
   fogRestoreDuration: 0.45
   readyBeatDuration: 0.5
   ufoFlashHz: 8
+  regateCalloutHoldSec: 0.5
+  regateRetrySec: 0.5
   cameraPanDuration: 0.45
   cameraPanRange: 6
   skyboxSpinAmount: 60
-  fpsRevealDelay: 0.12
 --- !u!4 &263729326
 Transform:
   m_ObjectHideFlags: 0
@@ -262,6 +280,11 @@ MonoBehaviour:
   hitVolume: 1
   miss: {fileID: 8300000, guid: a43f700f1e1311148b70f85ca9f2d979, type: 3}
   missVolume: 1
+  shockwaveBlast: {fileID: 8300000, guid: 2514cd2d9b24830438aec6f1d1bb541c, type: 3}
+  shockwaveBlastVolume: 1
+  barrageExplosionVolume: 0.55
+  barrageSpatialBlend: 0.75
+  barrageVoices: 12
   ufoEngine: {fileID: 8300000, guid: 73c64e048cfca0e49959051d3230b317, type: 3}
   ufoEngineVolume: 0.4
 --- !u!114 &263729329
@@ -285,9 +308,11 @@ MonoBehaviour:
   pythonExecutable: python
   databaseScriptPath: Analysis/build_db.py
   databaseWaitSec: 20
+  fallbackDurationSec: 300
   showPracticeHints: 1
-  standingHintText: FIND WHERE THE FRAME RATE CHANGES
-  crossingHintText: "FRAME RATE CHANGED \u2014 FIRE HERE"
+  idleHintText: SPOT THE STUTTER
+  laserHintText: "STUTTER \u2014 FIRE HERE"
+  shockwaveHintText: "STUTTER \u2014 FIRE NOW"
   practiceHintSec: 1.1
   gameManager: {fileID: 263729325}
   laser: {fileID: 875238946}
@@ -296,6 +321,7 @@ MonoBehaviour:
   perturbation: {fileID: 263729322}
   ufo: {fileID: 906968768}
   overlay: {fileID: 0}
+  shockwave: {fileID: 0}
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0
@@ -457,6 +483,15 @@ MonoBehaviour:
   shakeFrequency: 9
   shakeLateralBias: 0.45
   shakeNoiseBlend: 0.732
+  shockwaveShakeDuration: 1.8
+  shockwaveShakeMagnitude: 4.2
+  shockwaveShakeDecay: 1.9
+  shockwaveShakeFrequency: 2.2
+  shockwaveShakeNoiseBlend: 0.14
+  shockwaveShakeNoiseRate: 3.5
+  shockwaveShakeRoll: 12
+  shockwaveShakeKick: 3.5
+  shockwaveShakeKickDecay: 3
 --- !u!1 &355956065
 GameObject:
   m_ObjectHideFlags: 0
@@ -670,11 +705,7 @@ MonoBehaviour:
   scoreText: {fileID: 1127966278}
   progressFill: {fileID: 691038007}
   hudFont: {fileID: 11400000, guid: 78c5dcc89e87b1846b0d3a18e00b4727, type: 2}
-  showDebug: 1
   debugText: {fileID: 1257439593}
-  layOutDebugPanel: 1
-  debugFontSize: 22
-  debugMargin: 16
   flashHold: 0.1
   flashFade: 0.2
   hitFlashColor: {r: 0.2, g: 1, b: 0.25, a: 0.5}
@@ -685,30 +716,13 @@ MonoBehaviour:
   vignetteResolution: 256
   scoreBeatPeak: 1.45
   progressSmoothSec: 0.5
-  layOutProgressBar: 1
-  progressWidthFraction: 0.66
-  progressHeight: 28
-  progressBottomMargin: 48
-  progressLabelText: PROGRESS
-  progressLabelDuringPracticeOnly: 1
-  progressLabelSize: 32
-  progressLabelGap: 8
-  progressFillColor: {r: 0.55, g: 0.95, b: 1, a: 0.97}
-  progressTrackColor: {r: 0, g: 0, b: 0, a: 0.62}
-  progressLabelColor: {r: 0.9, g: 0.96, b: 1, a: 0.92}
-  showHitMissTally: 1
-  tallySlots: 12
-  tallyPipSize: 34
-  tallyPipSpacing: 12
-  tallyFillScale: 0.74
-  tallyHitColor: {r: 0.3, g: 1, b: 0.45, a: 1}
-  tallyMissColor: {r: 1, g: 0.68, b: 0.2, a: 1}
-  tallyRanOutColor: {r: 1, g: 0.32, b: 0.32, a: 1}
-  tallyEmptyColor: {r: 1, g: 1, b: 1, a: 0.34}
-  tallyPopScale: 1.7
-  tallyPopSec: 0.34
+  shockwaveFlashColor: {r: 0.75, g: 0.45, b: 1, a: 1}
+  shockwaveAlpha: 0.85
+  calloutShockwaveHitText: DESTROYED!
+  calloutShockwaveEarlyText: TOO EARLY!
+  calloutShockwaveLateText: TOO LATE!
   calloutOutOfTimeText: OUT OF TIME!
-  calloutCrossingCapText: TOO MANY PASSES!
+  calloutShockwaveFailColor: {r: 1, g: 0.68, b: 0.2, a: 1}
   calloutHitText: Hit!
   calloutMissText: Miss!
   calloutDuration: 0.3
@@ -894,7 +908,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: fe87c0e1cc204ed48ad3b37840f39efc, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.Image
   m_Material: {fileID: 0}
   m_Color: {r: 0, g: 0, b: 0, a: 0.45}
@@ -969,7 +983,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: fe87c0e1cc204ed48ad3b37840f39efc, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.Image
   m_Material: {fileID: 0}
   m_Color: {r: 0.92, g: 0.95, b: 1, a: 0.9}
@@ -1208,7 +1222,7 @@ MonoBehaviour:
   beamWidth: 0.05
   beamDuration: 0.15
   beamFlashIntensity: 25
-  sight: {fileID: 0}
+  shockwaveCannon: {fileID: 0}
   fireOnLeftClick: 1
   altFireKey: 32
   pointerRenderer: {fileID: 1319306821}
@@ -1243,11 +1257,6 @@ MonoBehaviour:
   minY: 2
   maxY: 20
   fixedZ: 0
-  tintHull: 1
-  liveryTint: {r: 0.35, g: 1, b: 0.85, a: 1}
-  tintStrength: 0.55
-  tintEmission: 1
-  emissionCeiling: 2.5
 --- !u!114 &906968769
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1480,9 +1489,6 @@ MonoBehaviour:
   fogBandDepth: 6
   fogMaxScreenSize: 0.35
   fogFollowsCamera: 1
-  tintFog: 1
-  fogTint: {r: 0.62, g: 0.86, b: 0.95, a: 1}
-  fogTintStrength: 0.5
   useLateralShockwave: 1
   blastStrength: 9
   blastFalloffRadius: 5
@@ -1497,7 +1503,6 @@ MonoBehaviour:
   towerLaserHeight: 30
   towerLaserColor: {r: 0.2, g: 1, b: 0.5, a: 1}
   towerLaserWidth: 0.06
-  showTowerBeam: 1
   showHitZone: 0
   hitZoneOpacity: 0.35
   hitZoneRadius: 1

@@ -12,8 +12,9 @@ namespace JndUfo
     /// This used to also load the per-mode config files from StreamingAssets. Those six files
     /// were merged into <c>Data/ExperimentConfig.csv</c>, one row per round condition, so file
     /// reading now lives in <see cref="CsvTable"/> and <see cref="StudyConfig"/>; the getters
-    /// below stayed because the legacy <see cref="UfoStaircaseConfig.FromCsv"/> reads its grid
-    /// through them. (QUEST+ is now built straight from a parsed StudyConfig.)
+    /// below stayed because <see cref="QuestPlusConfig.FromCsv"/> and
+    /// <see cref="UfoStaircaseConfig.FromCsv"/> read their grids through them and are
+    /// indifferent to where the row came from.
     /// </summary>
     public static class CsvConfig
     {

@@ -48,14 +48,6 @@ namespace JndUfo
             }
         }
 
-        /// <summary>Sets the font outright — for editor tools that build the HUD outside the game
-        /// scene, where there is no UIManager to read it from.</summary>
-        public static void Override(TMP_FontAsset font)
-        {
-            _font     = font;
-            _resolved = true;
-        }
-
         public static void Apply(TMP_Text text)
         {
             if (text == null) return;

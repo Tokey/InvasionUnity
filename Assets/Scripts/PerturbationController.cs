@@ -1,86 +1,109 @@
+using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
+using System.Threading;
+using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine;
 
 namespace JndUfo
 {
     /// <summary>
-    /// Core JND logic: splits the screen's frame rate at the hidden tower.
+    /// Core JND logic. Detects which side of the tower the UFO is on and applies
+    /// the active perturbation (FPS, frame-time stutter, latency, or acceleration).
     ///
-    /// While a trial is live, the side of the tower the UFO is on decides the frame-rate cap: one
-    /// side runs at the block's base frame rate, the other at base − Δ or base + Δ (the block's
-    /// <c>direction</c>), and which side gets the altered rate is drawn per round (or pinned by the
-    /// block's <c>alteredSide</c>). The participant feels the motion change as they fly across the
-    /// boundary and shoots where they think it is; landing the shot on the hidden tower is the
-    /// detection response. QUEST+ picks Δ for every main round; practice walks a fixed ladder.
+    /// Configuration arrives one round at a time: ExperimentDirector calls BeginRound() with a
+    /// row of Data/ExperimentConfig.csv, which sets the test mode and task parameters and
+    /// builds a fresh staircase for that round. When no director is present the controller
+    /// self-initialises from row 1 so the gameplay scene stays playable on its own.
     ///
-    /// The split is only in force between <see cref="BeginTrial"/> (the round's starting gun) and
-    /// <see cref="EndTrial"/> (its response). Everything else — the reveal, the reset under the
-    /// veil, the prompts — runs at the base frame rate, so the participant never meets the altered
-    /// rate outside a round and the reveal's animation runs smoothly whatever Δ was.
+    /// When useStaircase is true the perturbation magnitude is driven by that staircase.
+    /// GameManager calls ReportShotResult() after each shot to advance it.
     ///
-    /// Timing contract. The cap chosen in frame N's LateUpdate governs the wait at the start of
-    /// frame N+1 (see <see cref="FrameLimiter"/>), so frame N+1's unscaledDeltaTime is the frame that
-    /// cap produced. Update attributes each frame's delta to the side whose cap governed it, which
-    /// is how a trial's measured per-side frame rate is built; it runs at execution order −200 so a
-    /// shot fired this frame already sees this frame's delta.
+    /// FrameTimeStutter (FT) always runs on QuestPlusStaircase — a Bayesian QUEST+
+    /// procedure (Watson, 2017) built from the round row's stim/thresh/slope/lapse grid
+    /// columns — regardless of useManualLevelList, since a fixed manual list isn't
+    /// compatible with a Bayesian posterior search. The spike fires once per tower crossing;
+    /// the next shot's accuracy (see GameManager.HandleShotFired / ReportShotResult below)
+    /// tells the staircase whether that spike was noticed — see QuestPlusStaircase.cs.
+    ///
+    /// FPS, Latency, and Acceleration still run the legacy two-phase coarse/fine staircase
+    /// (see UfoStaircase), reading their range from the same row's mode-specific columns
+    /// (startDropFps/minDropFps/maxDropFps, startMs/minMs/maxMs, startMult/minMult/maxMult).
+    /// When useManualLevelList is also true, those three modes instead step through the fixed
+    /// list of magnitudes in the row's semicolon-separated manualLevels cell.
     /// </summary>
-    [DefaultExecutionOrder(-200)]
     public class PerturbationController : MonoBehaviour
     {
+        public enum TestMode { FPS, FrameTimeStutter, Latency, Acceleration }
         public enum Side { Left, Right }
 
-        /// <summary>
-        /// One round's stimulus and how it was actually delivered. Filled in from the round's
-        /// starting gun to its response, then latched into <see cref="LastTrial"/> for the shot log
-        /// and the reveal.
-        /// </summary>
-        public struct TrialRecord
-        {
-            public bool  valid;
-            public bool  practice;
-            public int   diffFps;
-            public int   baseFps;
-            public int   alteredFps;
-            public Side  alteredSide;
+        [Header("Test Mode")]
+        public TestMode testMode = TestMode.FPS;
 
-            /// <summary>Frames, and seconds of frame time, delivered under each side's cap.</summary>
-            public int   baseFrames, alteredFrames;
-            public float baseSec, alteredSec;
+        [Header("Staircase")]
+        [Tooltip("When true, perturbation magnitude is driven by the staircase loaded from CSV.")]
+        public bool useStaircase = true;
 
-            /// <summary>Tower crossings while the split was in force.</summary>
-            public int   crossings;
+        [Header("Manual List Staircase")]
+        [Tooltip("When true (and useStaircase is true), the staircase steps through a fixed list " +
+                 "of magnitudes loaded from CSV (1-up/1-down, ascending order) instead of the " +
+                 "dynamic min/max/step search.")]
+        public bool useManualLevelList = false;
+        [Tooltip("Index into the level list to start at (-1 = start at the highest-magnitude level, " +
+                 "regardless of which order the CSV rows are in).")]
+        public int manualStartIndex = -1;
+        [Tooltip("Number of reversals to collect before the run ends.")]
+        public int manualReversalsToEnd = 6;
+        [Tooltip("Number of trailing reversals averaged for the JND estimate.")]
+        public int manualReversalsToAverage = 6;
+        [Tooltip("Hard safety cap on trial count.")]
+        public int manualMaxTrials = 60;
 
-            /// <summary>Precise limiter: frames released late (no spare time to wait out). Always 0
-            /// under Unity's limiter, which does not report it.</summary>
-            public int   lateFrames;
-
-            // Time.realtimeSinceStartup; NaN = never happened.
-            public float startedRealtime;
-            public float lastCrossingRealtime;
-
-            public int LeftFps  => alteredSide == Side.Left  ? alteredFps : baseFps;
-            public int RightFps => alteredSide == Side.Right ? alteredFps : baseFps;
-
-            /// <summary>Frame rate actually delivered on each side: frames over frame time. NaN when
-            /// the UFO never spent a frame there.</summary>
-            public float MeasuredBaseFps    => baseSec    > 0f ? baseFrames    / baseSec    : float.NaN;
-            public float MeasuredAlteredFps => alteredSec > 0f ? alteredFrames / alteredSec : float.NaN;
-            public float MeasuredLeftFps    => alteredSide == Side.Left  ? MeasuredAlteredFps : MeasuredBaseFps;
-            public float MeasuredRightFps   => alteredSide == Side.Right ? MeasuredAlteredFps : MeasuredBaseFps;
-        }
-
-        /// <summary>Which side's cap paced a frame. None between rounds, when the base cap applies but
-        /// no split is in force.</summary>
-        public enum Pace { None, Base, Altered }
-
-        [Header("Task Parameters  (pushed from the block config)")]
+        [Header("Task Parameters")]
         [Tooltip("Radius (world units) within which a shot counts as a hit. Applied to ScoreManager.")]
-        public float closeRadius = 5.5f;
-        [Tooltip("Show the hit-zone lines on the tower beam during the reveal.")]
+        public float closeRadius = 1f;
+        [Tooltip("Show the hit-zone aura on the tower laser. Applied to TowerManager.")]
         public bool  showHitZone = true;
-        [Tooltip("Half-width dead-zone (world units) around the tower. The UFO keeps its side until " +
-                 "it is this far past the boundary, so hovering on the line cannot flicker the frame " +
-                 "rate between the two caps every frame.")]
+
+        // ── Manual fallback values (used when useStaircase = false) ──────────
+
+        [Header("FPS (manual fallback)")]
+        public int fpsLeft  = 60;
+        public int fpsRight = 500;
+
+        [Header("Frame-Time Stutter (manual fallback)")]
+        [Tooltip("Main-thread stutter triggered each time the UFO crosses the tower (ms).")]
+        public float spikeMagnitudeMs = 100f;
+        [Tooltip("Busy-wait (like a compute hitch) vs Thread.Sleep (yields the thread).")]
+        public bool spikeUseBusyWait = true;
+
+        [Header("Shockwave")]
+        [Tooltip("What an anticipatory press — one made before the round's first stutter — is " +
+                 "worth to QUEST+. The round carries on toward its stutter under every policy; " +
+                 "this only decides what the posterior hears.\n\n" +
+                 "CountAsMiss: shown as too early, and the posterior hears 'did not notice'.\n" +
+                 "DiscardAndRetry (default): shown as too early and penalised on the scoreboard, " +
+                 "but QUEST+ never hears it — an early press answered no stutter, so it is not " +
+                 "evidence about the threshold.\n" +
+                 "IgnoreAndContinue: the press is swallowed entirely — no blast, no penalty, no " +
+                 "log row. Useful while piloting.\n\n" +
+                 "Forgiven presses are capped by swMaxEarlyPerRound in the CSV; one past the cap " +
+                 "forfeits the round as a counted miss under every policy.\n\n" +
+                 "Only affects blocks whose weapon column is 'shockwave'.")]
+        public EarlyFirePolicy earlyFirePolicy = EarlyFirePolicy.DiscardAndRetry;
+
+        [Header("Latency (manual fallback, ms)")]
+        public float latencyLeftMs  = 0f;
+        public float latencyRightMs = 100f;
+        [Tooltip("Time (s) to ramp between latency levels when crossing.")]
+        public float latencyRampDuration = 0.1f;
+
+        [Header("Acceleration (manual fallback)")]
+        public bool accelerationLeft  = false;
+        public bool accelerationRight = true;
+
+        [Header("Crossing")]
+        [Tooltip("Half-width dead-zone (world units) around the tower.")]
         public float crossingDeadZone = 0.25f;
 
         [Header("References  (auto-found; drag-override if needed)")]
@@ -91,123 +114,239 @@ namespace JndUfo
         public UIManager     uiManager;
 
         // ── Read-only state ──────────────────────────────────────────────────
+        public Side  CurrentSide      { get; private set; } = Side.Left;
+        public float CurrentLatencyMs { get; private set; }
+        public int   CurrentFps       { get; private set; }
 
-        /// <summary>The side of the tower the UFO is on, as of the last LateUpdate.</summary>
-        public Side CurrentSide { get; private set; } = Side.Left;
-
-        /// <summary>The cap applied in the last LateUpdate (fps) — it governs the NEXT frame.</summary>
-        public int  CurrentTargetFps { get; private set; }
-
-        /// <summary>The cap that paced THIS frame — the one Time.unscaledDeltaTime measures — and
-        /// which side's it was. Captured at the top of Update, before anything can change them.</summary>
-        public int  PacedFps { get; private set; }
-        public Pace PacedBy  { get; private set; }
-
-        /// <summary>True while the two sides run at different frame rates — from a round's starting
-        /// gun to its response.</summary>
-        public bool SplitActive { get; private set; }
-
-        /// <summary>Set on the frame the UFO crosses the tower while the split is in force.</summary>
-        public bool CrossedThisFrame { get; private set; }
-
-        /// <summary>Crossings while the split was in force, this block.</summary>
-        public int  CrossingCount { get; private set; }
-
-        /// <summary>The round in progress. Meaningful only while <see cref="SplitActive"/>.</summary>
-        public TrialRecord CurrentTrial => _trial;
-
-        /// <summary>Crossings so far in the round in progress; 0 between rounds.</summary>
-        public int  TrialCrossings => SplitActive ? _trial.crossings : 0;
-
-        /// <summary>The last round that ended, latched by <see cref="EndTrial"/>. This is what the
-        /// shot log and the reveal describe.</summary>
-        public TrialRecord LastTrial { get; private set; }
-
-        /// <summary>The frame-rate difference in force — the live round's, or the one the next round
-        /// will present.</summary>
-        public int  CurrentDiffFps => SplitActive ? _trial.diffFps : PendingDiffFps;
-
-        /// <summary>True while warm-up rounds are being played: Δ comes from the practice ladder and
-        /// responses never reach QUEST+.</summary>
-        public bool PracticeMode => _practiceMode;
-
-        public int  BaseFps => _config != null ? _config.baseFps : 0;
-
-        /// <summary>The base frame rate in force right now: the round's while a split is open,
-        /// otherwise the rate the game idles at between rounds — the practice pair's higher rate
-        /// during practice, the block's base otherwise.</summary>
-        public int  CurrentBaseFps => SplitActive ? _trial.baseFps : NeutralFps;
-
-        /// <summary>Shown at the top of the debug readout — "PRACTICE" or "MAIN 2/3". Set by the
-        /// director.</summary>
-        public string DebugLabel { get; set; } = "";
-        public FrameLimiterMode LimiterMode =>
-            _config != null ? _config.frameLimiter : FrameLimiterMode.Precise;
-
-        /// <summary>The study config currently applied, or null before the first BeginBlock.</summary>
-        public StudyConfig CurrentConfig => _config;
-
-        /// <summary>The live staircase, for the logs. Null before the first BeginBlock.</summary>
-        public QuestPlusStaircase ActiveStaircase => _staircase;
-        public int  StaircaseTrials => _staircase?.TrialCount ?? 0;
+        // Current stimulus value (mirrored publicly for the logs and debug HUD). During practice
+        // this is the fixed practice stutter, so the logs record what was actually presented.
+        public float CurrentStimulusValue =>
+            _practiceMode ? _practiceStutterMs : (_staircase?.CurrentValue ?? 0f);
 
         /// <summary>
-        /// Blocks crossing counting while the camera pans. Side is measured along the camera's right
-        /// axis, so a pan sweeps the tower across the UFO's apparent position and manufactures
-        /// crossings the participant never made.
+        /// The stimulus that was actually on screen for the trial being scored, latched at
+        /// the top of <see cref="ReportShotResult"/>.
+        ///
+        /// This is the one to log against a response. <see cref="CurrentStimulusValue"/> is
+        /// live, and RecordResponse advances it to the next trial's stimulus as part of
+        /// folding in the answer — so reading it after the fact yields the stimulus the
+        /// participant has not seen yet.
         /// </summary>
-        public bool SuppressCrossings { get; set; }
+        public float PresentedStimulusMs { get; private set; }
 
-        /// <summary>Forgets which side the UFO was on, so the next frame establishes a fresh baseline
-        /// instead of reporting a crossing. Call after moving the camera or the tower.</summary>
-        public void ResetSideTracking() => _lastSideSign = 0;
+        /// <summary>True while warm-up shots are being played. Stutters use a fixed size and
+        /// responses are discarded rather than fed to the staircase.</summary>
+        public bool PracticeMode => _practiceMode;
+        public int   StaircaseTrials      => _staircase?.TrialCount ?? 0;
 
-        /// <summary>Which side of the tower a world position is on, ignoring the dead zone — for
-        /// stamping a shot with the side it was actually fired from.</summary>
-        public Side SideOf(Vector3 worldPos)
-        {
-            Vector3 right = rig != null ? rig.Right : Vector3.right;
-            Vector3 tower = towerManager != null ? towerManager.TowerBase : Vector3.zero;
-            return Vector3.Dot(worldPos - tower, right) >= 0f ? Side.Right : Side.Left;
-        }
+        /// <summary>The live staircase, for the round/shot logs. Null when useStaircase is off.</summary>
+        public IJndStaircase ActiveStaircase => _staircase;
+
+        /// <summary>The study config currently applied, or null before the first BeginRound.</summary>
+        public StudyConfig CurrentConfig => _config;
 
         // ── Cached QUEST+ readouts ───────────────────────────────────────────
-        // Recomputed only when a response updates the posterior: each is a full pass over the
-        // parameter grid, and the debug HUD reads them once a second.
-        /// <summary>Posterior mean of θ (fps) as of the last response.</summary>
-        public float ThresholdEstimate  { get; private set; } = float.NaN;
-        /// <summary>SD of the θ marginal (fps) as of the last response.</summary>
-        public float PosteriorSD        { get; private set; } = float.NaN;
+        // Recomputed only when a response actually updates the posterior. The player log records
+        // these every frame, and each of the three costs a full pass over the ~2k-cell parameter
+        // grid — running them per frame would put measurable work in exactly the place this
+        // study measures frame times.
+        /// <summary>Posterior mean of θ (ms) as of the last response.</summary>
+        public float ThresholdEstimateMs { get; private set; } = float.NaN;
+        /// <summary>SD of the θ marginal (ms) as of the last response.</summary>
+        public float PosteriorSDMs       { get; private set; } = float.NaN;
         /// <summary>Posterior mean of the Weibull slope β as of the last response.</summary>
-        public float SlopeEstimateValue { get; private set; } = float.NaN;
-        /// <summary>Posterior mean of the lapse rate λ as of the last response.</summary>
-        public float LapseEstimateValue { get; private set; } = float.NaN;
-
-        // Kept for StaircaseConvergencePlot.
-        public bool  IsQuestPlusStaircase => _staircase != null;
-        public float JndEstimate          => _staircase?.JndEstimate() ?? 0f;
-        public float StaircaseThresholdSD => _staircase?.PosteriorThresholdSD() ?? 0f;
-        public QuestPlusConfig QuestPlusConfigRef => _staircase?.Config;
+        public float SlopeEstimateValue  { get; private set; } = float.NaN;
+        /// <summary>Posterior mean of the lapse rate λ as of the last response — the curve's
+        /// ceiling is 1 - λ, so the fit can't be reconstructed without it.</summary>
+        public float LapseEstimateValue  { get; private set; } = float.NaN;
 
         void RefreshStaircaseEstimates()
         {
-            ThresholdEstimate  = _staircase != null ? _staircase.JndEstimate()          : float.NaN;
-            PosteriorSD        = _staircase != null ? _staircase.PosteriorThresholdSD() : float.NaN;
-            SlopeEstimateValue = _staircase != null ? _staircase.SlopeEstimate()        : float.NaN;
-            LapseEstimateValue = _staircase != null ? _staircase.LapseEstimate()        : float.NaN;
+            var qp = _staircase as QuestPlusStaircase;
+            ThresholdEstimateMs = _staircase != null ? _staircase.JndEstimate() : float.NaN;
+            PosteriorSDMs       = qp != null ? qp.PosteriorThresholdSD() : float.NaN;
+            SlopeEstimateValue  = qp != null ? qp.SlopeEstimate() : float.NaN;
+            LapseEstimateValue  = qp != null ? qp.LapseEstimate() : float.NaN;
         }
 
+        // ── Per-round counters (reset by BeginRound; read by ExperimentDirector) ──
+        /// <summary>Tower crossings detected this round — each one schedules an FT stutter.</summary>
+        public int   CrossingCount { get; private set; }
+        /// <summary>Stutters actually executed this round.</summary>
+        public int   SpikeCount    { get; private set; }
+        /// <summary>Sum of MEASURED stutter durations this round, not requested ones.</summary>
+        public float TotalStutterMs  { get; private set; }
+        /// <summary>Set on the frame a stutter runs. The stutter happens at the end of that frame,
+        /// so the long unscaledDeltaTime it causes lands on the *following* frame's log row.</summary>
+        public bool  SpikeFiredThisFrame { get; private set; }
+        /// <summary>Measured duration of the most recent stutter (ms).</summary>
+        public float LastStutterMs         { get; private set; }
+
+        /// <summary>
+        /// Wall-clock instant (<see cref="Time.realtimeSinceStartup"/>) at which the most recent
+        /// stutter finished blocking the main thread.
+        ///
+        /// The shockwave response window opens here rather than when the stutter was requested:
+        /// the stutter runs at the END of the frame that schedules it, so a participant cannot
+        /// have reacted to it yet, and starting the clock early would charge them the whole
+        /// stutter as reaction time — worst exactly where the stimulus is largest.
+        ///
+        /// realtimeSinceStartup, not unscaledTime: the latter is stamped once at the top of a
+        /// frame, so reading it here would report the instant the stutter STARTED and quietly
+        /// subtract the whole stimulus from every reaction time. Same origin as the frame clock
+        /// (ExperimentDirector verifies this each phase), so it rebases directly onto the phase
+        /// clock the logs use.
+        /// </summary>
+        public float LastSpikeEndRealtime { get; private set; } = float.NaN;
+
+        /// <summary>
+        /// Which cannon this block hands the participant, and therefore what triggers the stutter:
+        /// the UFO crossing the tower (laser) or a timer the participant cannot anticipate
+        /// (shockwave). Set from the block's CSV row by <see cref="BeginRound"/>.
+        /// </summary>
+        public WeaponKind Weapon { get; private set; } = WeaponKind.Laser;
+
+        const int MaxLoggedStuttersPerShot = 256;
+        readonly List<float> _stuttersSinceShot   = new List<float>(32);
+        // Parallel to the above: when each one finished (realtimeSinceStartup), so the shot log
+        // can say not just how many stutters preceded a response but when each landed.
+        readonly List<float> _stutterEndsSinceShot = new List<float>(32);
+
+        // Running moments, kept alongside the list. The list is capped so a stuck round
+        // can't grow it without bound, but these are updated on every stutter regardless,
+        // so the summary stays exact even in the case where the list gets truncated.
+        int   _stutterN;
+        float _stutterSum, _stutterSumSq, _stutterMin, _stutterMax;
+
+        /// <summary>
+        /// Measured durations of every stutter fired since the last shot, oldest first.
+        ///
+        /// The staircase picks one stimulus level per trial and every crossing fires at
+        /// that level, so these should all sit near <see cref="CurrentStimulusValue"/> —
+        /// spread within a trial is delivery jitter, not a change of stimulus. Drained by
+        /// <see cref="TakeStutterBurst"/> when a shot is recorded.
+        /// </summary>
+        public IReadOnlyList<float> StuttersSinceLastShot => _stuttersSinceShot;
+
+        /// <summary>Every stutter delivered between two shots, listed and summarised.</summary>
+        public struct StutterBurst
+        {
+            public int    count;
+            public string listMs;    // "50.12;52.44;70.19", oldest first
+            public string listAtSec; // when each finished, on the caller's clock, same order
+            public float  meanMs, sdMs, minMs, maxMs;
+        }
+
+        /// <summary>
+        /// Returns the stutters fired since the last shot and clears them for the next trial.
+        ///
+        /// Draining and summarising in one call is deliberate: a separate "read the stats"
+        /// getter would have to be called before the one that clears, and that ordering
+        /// requirement is exactly the kind of thing that silently breaks later.
+        ///
+        /// sdMs is the population SD (divided by n, not n-1). These are the stutters actually
+        /// delivered, not a sample drawn from some larger set, so the population form is the
+        /// right one — and it stays defined at n = 1, where it is simply 0.
+        /// </summary>
+        /// <param name="realtimeOrigin">The caller's clock zero on <see cref="Time.realtimeSinceStartup"/>;
+        /// each stutter's end is listed relative to it.</param>
+        public StutterBurst TakeStutterBurst(float realtimeOrigin, int decimals = 2)
+        {
+            var burst = new StutterBurst { count = _stutterN, listMs = string.Empty, listAtSec = string.Empty };
+
+            if (_stutterN > 0)
+            {
+                float mean = _stutterSum / _stutterN;
+                float var  = Mathf.Max(0f, _stutterSumSq / _stutterN - mean * mean);
+
+                burst.meanMs = mean;
+                burst.sdMs   = Mathf.Sqrt(var);
+                burst.minMs  = _stutterMin;
+                burst.maxMs  = _stutterMax;
+
+                var ms = new StringBuilder(_stuttersSinceShot.Count * 7);
+                var at = new StringBuilder(_stuttersSinceShot.Count * 9);
+                for (int i = 0; i < _stuttersSinceShot.Count; i++)
+                {
+                    if (i > 0) { ms.Append(';'); at.Append(';'); }
+                    ms.Append(_stuttersSinceShot[i].ToString("F" + decimals, CultureInfo.InvariantCulture));
+                    at.Append((_stutterEndsSinceShot[i] - realtimeOrigin).ToString("F4", CultureInfo.InvariantCulture));
+                }
+                burst.listMs    = ms.ToString();
+                burst.listAtSec = at.ToString();
+            }
+
+            ResetStutterBurst();
+            return burst;
+        }
+
+        /// <summary>
+        /// Forgets the stutters accumulated since the last shot without reporting them. Public
+        /// for ExperimentDirector.BeginPhase, which baselines its own spike count at the same
+        /// moment: the list and the count have to start a phase together, or the phase's first
+        /// row lists stutters its count says never happened.
+        /// </summary>
+        public void ResetStutterBurst()
+        {
+            _stuttersSinceShot.Clear();
+            _stutterEndsSinceShot.Clear();
+            _stutterN   = 0;
+            _stutterSum = _stutterSumSq = 0f;
+            _stutterMin = float.MaxValue;
+            _stutterMax = float.MinValue;
+        }
+
+        /// <summary>
+        /// Blocks stutters and crossing counting while the camera is moving.
+        ///
+        /// Side is measured along the camera's right axis, so a pan sweeps the tower across the
+        /// UFO's apparent position and manufactures crossings that the player never made. Left
+        /// unguarded that fires a burst of stutters during every scene change — stimuli the
+        /// participant is never asked about, but which QUEST+ would still be reasoning about.
+        /// </summary>
+        public bool SpikesSuppressed { get; set; }
+
+        /// <summary>
+        /// Forgets which side the UFO was on, so the next frame establishes a fresh baseline
+        /// instead of reporting a crossing. Call after moving the camera or the tower.
+        /// </summary>
+        public void ResetSideTracking() => _lastSideSign = 0;
+        // Reversal counting only applies to the legacy coarse/fine staircase; QUEST+
+        // (used for FrameTimeStutter) tracks precision via posterior SD instead.
+        public int   StaircaseReversals   => (_staircase as UfoStaircase)?.ReversalCount ?? 0;
+        public bool  StaircaseFinished    => _staircase?.IsFinished ?? false;
+        public float JndEstimate          => _staircase?.JndEstimate() ?? 0f;
+
+        // Exposed for StaircaseConvergencePlot — QUEST+-only (posterior SD / grid have no
+        // equivalent on the legacy coarse/fine staircase).
+        public bool  IsQuestPlusStaircase  => _staircase is QuestPlusStaircase;
+        public float StaircaseThresholdSD  => (_staircase as QuestPlusStaircase)?.PosteriorThresholdSD() ?? 0f;
+        public QuestPlusConfig QuestPlusConfigRef => (_staircase as QuestPlusStaircase)?.Config;
+
         // ── Private ──────────────────────────────────────────────────────────
-        StudyConfig        _config;
-        QuestPlusStaircase _staircase;
-        bool               _blockActive;
-        bool               _practiceMode;
-        PracticePair       _practicePair;
-        int                _lastSideSign;
-        TrialRecord        _trial;
-        Pace               _appliedPace;
-        float              _prevDiff = float.NaN;
-        readonly StringBuilder _debug = new StringBuilder(512);
+        int   _lastSideSign;
+        InputLatencyBuffer     _inputLatency;
+        MouseAccelerationBuffer _accelBuffer;
+
+        bool  _spikePending;
+        float _spikePendingMs;
+        float _rampedLatencyMs;
+
+        // Staircase
+        IJndStaircase _staircase;
+        float        _baselineFps     = 144f;
+        float        _prevStimValue   = -1f;
+
+        // Round
+        StudyConfig  _config;
+        bool         _roundActive;
+
+        // Practice
+        bool         _practiceMode;
+        float        _practiceStutterMs;
+
+        // Frame-rate cap for the current block; <= 0 means uncapped.
+        int          _applicationFpsCap = -1;
 
         // ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -219,183 +358,288 @@ namespace JndUfo
             if (scoreManager  == null) scoreManager  = FindAnyObjectByType<ScoreManager>();
             if (uiManager     == null) uiManager     = FindAnyObjectByType<UIManager>();
 
+            if (ufoController != null)
+            {
+                _inputLatency = ufoController.GetComponent<InputLatencyBuffer>();
+                _accelBuffer  = ufoController.GetComponent<MouseAccelerationBuffer>();
+                if (_inputLatency != null) _inputLatency.accelBuffer = _accelBuffer;
+            }
+
             QualitySettings.vSyncCount = 0;
         }
 
         void Start()
         {
-            if (rig == null) rig = CameraRig.Instance;
-
-            // ExperimentDirector owns sequencing. With no director — a designer hitting Play on the
-            // gameplay scene alone — run block 1 of the config as a free-play round so the split
-            // still works.
-            if (ExperimentDirector.Instance == null)
+            // ExperimentDirector owns round sequencing and calls BeginRound() itself. Only
+            // self-initialise when nothing is orchestrating — free play, or a scene without
+            // the director — so a designer can still hit Play on the gameplay scene alone.
+            if (ExperimentDirector.Instance == null && useStaircase)
             {
                 var blocks = StudyConfig.LoadAll();
                 if (blocks.Count > 0)
                 {
                     Debug.Log("[PerturbationController] No ExperimentDirector in the scene — " +
-                              "free play on block 1 of ExperimentConfig.csv.");
-                    BeginBlock(blocks[0]);
-                    BeginTrial();
+                              "initialising from block 1 of ExperimentConfig.csv.");
+                    BeginRound(blocks[0]);
                 }
             }
-        }
 
-        void OnDestroy() => FrameLimiter.Release();
+            _rampedLatencyMs = testMode == TestMode.Latency
+                ? (CurrentSide == Side.Left ? latencyLeftMs : latencyRightMs)
+                : 0f;
+            ApplyFps();
+            ApplyLatency();
+        }
 
         void Update()
         {
-            // Cleared here, set in LateUpdate: the frame log (execution order 1000) reads it after
-            // LateUpdate, so it must not survive into the next frame.
-            CrossedThisFrame = false;
+            // Cleared here, set in LateUpdate: the player-log tick (DefaultExecutionOrder 1000)
+            // reads it after LateUpdate, so the flag must not survive into the next frame.
+            SpikeFiredThisFrame = false;
 
-            // This frame's delta is the period the previous frame's cap produced. Credit it to the
-            // side that cap belonged to — before any shot this frame latches the trial.
-            PacedFps = CurrentTargetFps;
-            PacedBy  = _appliedPace;
-
-            if (!SplitActive) return;
-            float dt = Time.unscaledDeltaTime;
-            if (_appliedPace == Pace.Base)         { _trial.baseFrames++;    _trial.baseSec    += dt; }
-            else if (_appliedPace == Pace.Altered) { _trial.alteredFrames++; _trial.alteredSec += dt; }
-        }
-
-        // LateUpdate rather than Update: every Update has moved the UFO by now, and coroutines (the
-        // pan) have run, so the side decided here is the side the frame about to render shows.
-        void LateUpdate()
-        {
-            UpdateSide();
-            ApplyCap();
-        }
-
-        void UpdateSide()
-        {
             if (ufoController == null || towerManager == null) return;
 
+            // ── Side detection ───────────────────────────────────────────────
             Vector3 right = rig != null ? rig.Right : Vector3.right;
-            float along = Vector3.Dot(ufoController.transform.position - towerManager.TowerBase, right);
+            float along = Vector3.Dot(
+                ufoController.transform.position - towerManager.TowerBase, right);
 
-            int sideSign;
-            if (_lastSideSign == 0)
-            {
-                // No baseline yet (start, or just reset): take the side the UFO is on, dead zone or
-                // not, and count nothing — a baseline is not a crossing.
-                sideSign = along >= 0f ? +1 : -1;
-            }
-            else
-            {
-                float dz = Mathf.Max(0f, crossingDeadZone);
-                sideSign = _lastSideSign;
-                if      (along >  dz) sideSign = +1;
-                else if (along < -dz) sideSign = -1;
-            }
+            float dz = Mathf.Max(0f, crossingDeadZone);
+            int sideSign = _lastSideSign;
+            if      (along >  dz) sideSign = +1;
+            else if (along < -dz) sideSign = -1;
 
-            bool crossed = _lastSideSign != 0 && sideSign != _lastSideSign;
-            _lastSideSign = sideSign;
-            CurrentSide   = sideSign >= 0 ? Side.Right : Side.Left;
+            bool crossed = sideSign != 0 && _lastSideSign != 0 && sideSign != _lastSideSign;
+            if (sideSign != 0) _lastSideSign = sideSign;
+            CurrentSide = _lastSideSign >= 0 ? Side.Right : Side.Left;
 
-            // A crossing manufactured by the camera moving under the UFO is not one the participant
-            // made, and one outside a trial crosses no frame-rate boundary.
-            if (!crossed || SuppressCrossings || !SplitActive) return;
+            // A crossing produced by the camera moving under the UFO is not a crossing the
+            // player made — it neither counts nor fires.
+            if (SpikesSuppressed) crossed = false;
+            if (crossed) CrossingCount++;
 
-            CrossingCount++;
-            CrossedThisFrame            = true;
-            _trial.crossings++;
-            _trial.lastCrossingRealtime = Time.realtimeSinceStartup;
+            // ── Stutter: one-shot per crossing ─────────────────────────────
+            // Shockwave blocks still track and count crossings — the UFO moves the same way and
+            // the side column stays meaningful — but they never fire from one. Their stutter is on
+            // a timer instead (see FireTimedSpike), so a participant who happens to sweep past the
+            // tower mid-trial gets no free stimulus out of it.
+            if (crossed && testMode == TestMode.FrameTimeStutter && Weapon == WeaponKind.Laser)
+                ScheduleSpike(PendingStimulusMs);
+
+            ApplyFps();
+            ApplyLatency();
+            ApplyAcceleration();
         }
-
-        void ApplyCap()
-        {
-            if (_config == null) return;
-
-            int  cap  = NeutralFps;
-            Pace pace = Pace.None;
-            if (SplitActive)
-            {
-                bool onAltered = CurrentSide == _trial.alteredSide;
-                cap  = onAltered ? _trial.alteredFps : _trial.baseFps;
-                pace = onAltered ? Pace.Altered      : Pace.Base;
-            }
-
-            FrameLimiter.Apply(cap, _config.frameLimiter);
-            CurrentTargetFps = cap;
-            _appliedPace     = pace;
-        }
-
-        // ── Block setup ──────────────────────────────────────────────────────
 
         /// <summary>
-        /// Applies a block's config and builds a fresh QUEST+ run for it. Called by
-        /// <see cref="ExperimentDirector"/> at the start of every block. Each block starts from the
-        /// uniform prior its config describes: blocks are independent measurements, so carrying a
-        /// posterior over would make one a continuation of the last rather than a replication.
+        /// The stutter size that would be delivered right now — the practice ladder's fixed value
+        /// during warm-up, otherwise whatever QUEST+ currently proposes, falling back to the
+        /// Inspector magnitude when the staircase is off.
         /// </summary>
-        public void BeginBlock(StudyConfig config)
+        float PendingStimulusMs => _practiceMode
+            ? _practiceStutterMs
+            : (useStaircase && _staircase != null ? _staircase.CurrentValue : spikeMagnitudeMs);
+
+        /// <summary>
+        /// Delivers this trial's stutter on demand, for shockwave blocks where a timer rather
+        /// than a tower crossing decides when the stimulus arrives.
+        ///
+        /// Returns the size requested. It lands at the end of this frame like any other spike, so
+        /// callers that need to know when it actually finished must wait for
+        /// <see cref="SpikeCount"/> to advance and then read
+        /// <see cref="LastSpikeEndRealtime"/>.
+        /// </summary>
+        public float FireTimedSpike()
         {
-            if (config == null) { Debug.LogError("[PerturbationController] BeginBlock(null)"); return; }
+            float ms = PendingStimulusMs;
+            ScheduleSpike(ms);
+            return ms;
+        }
 
-            _config          = config;
-            closeRadius      = config.closeRadius;
-            showHitZone      = config.showHitZone;
-            crossingDeadZone = config.crossingDeadZone;
+        /// <summary>
+        /// Drops a stutter that has been scheduled but not yet delivered.
+        ///
+        /// There is a one-frame window where a shockwave round requests its stutter in Update and
+        /// the participant fires in the same frame, before LateUpdate has run it. They cannot have
+        /// reacted to a frame that has not been presented, so the press is early (or late for the
+        /// previous stutter) and the round clock reschedules; letting this one go off anyway would
+        /// land it in the middle of the callout with its window already ticking.
+        /// </summary>
+        public void CancelPendingSpike() => _spikePending = false;
 
-            CancelTrial();
-            LastTrial      = default;
+        void LateUpdate()
+        {
+            if (!_spikePending) return;
+            _spikePending = false;
+
+            float measured = Stutter(_spikePendingMs);
+
+            SpikeFiredThisFrame  = true;
+            LastStutterMs        = measured;
+            LastSpikeEndRealtime = Time.realtimeSinceStartup;
+            SpikeCount++;
+            TotalStutterMs += measured;
+
+            _stutterN++;
+            _stutterSum   += measured;
+            _stutterSumSq += measured * measured;
+            if (measured < _stutterMin) _stutterMin = measured;
+            if (measured > _stutterMax) _stutterMax = measured;
+
+            // The list alone is capped, so a participant who stops shooting can't grow it
+            // without bound. 28 spikes between shots is the worst seen in a real session,
+            // so this only ever trips on a stuck round — and the count and the summary
+            // above stay correct even then.
+            if (_stuttersSinceShot.Count < MaxLoggedStuttersPerShot)
+            {
+                _stuttersSinceShot.Add(measured);
+                _stutterEndsSinceShot.Add(LastSpikeEndRealtime);
+            }
+        }
+
+        // ── Round setup ──────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Applies the study config and builds a fresh staircase. Called by
+        /// <see cref="ExperimentDirector"/> at the start of every round.
+        ///
+        /// The staircase is rebuilt per round rather than carried across the session: each
+        /// round is meant to be an independent QUEST+ run, so it starts from the uniform prior
+        /// the config describes. Carrying a posterior over would make round 2 a continuation of
+        /// round 1 rather than a replication of it.
+        /// </summary>
+        public void BeginRound(StudyConfig config)
+        {
+            if (config == null) { Debug.LogError("[PerturbationController] BeginRound(null)"); return; }
+
+            _config            = config;
+            testMode           = config.testMode;
+            Weapon             = config.weapon;
+            useStaircase       = config.useStaircase;
+            useManualLevelList = config.useManualLevelList;
+            closeRadius        = config.closeRadius;
+            showHitZone        = config.showHitZone;
+            crossingDeadZone   = config.crossingDeadZone;
+            spikeMagnitudeMs   = config.ftFallbackMagnitudeMs;
+            spikeUseBusyWait   = config.ftUseBusyWait;
+            _applicationFpsCap = config.unityApplicationFps;
+
+            manualStartIndex         = config.manualStartIndex;
+            manualReversalsToEnd     = config.manualReversalsToEnd;
+            manualReversalsToAverage = config.manualReversalsToAverage;
+            manualMaxTrials          = config.manualMaxTrials;
+
             CrossingCount  = 0;
+            SpikeCount     = 0;
+            TotalStutterMs   = 0f;
+            ResetStutterBurst();
+            _prevStimValue = -1f;
             _lastSideSign  = 0;
-            _prevDiff      = float.NaN;
-            _blockActive   = true;
+            _roundActive   = true;
 
-            QuestPlusConfig q = QuestPlusConfig.ForFpsDiff(config);
-            _staircase = new QuestPlusStaircase(q);
+            _staircase = useStaircase ? BuildStaircase(config) : null;
             RefreshStaircaseEstimates();
 
-            Debug.Log($"[PerturbationController] Block {config.blockIndex}: {config.Describe()}. QUEST+ " +
-                      $"Δ grid {q.stimGrid[0]:0}–{q.stimGrid[q.stimGrid.Length - 1]:0} fps " +
-                      $"({q.stimGrid.Length} values), θ grid {q.threshGrid.Length} × β {q.slopeGrid.Length} × " +
-                      $"λ {q.lapseGrid.Length}, γ={q.guessRate:0.000}, stop at SD ≤ {q.stopPosteriorSD:0.##} fps " +
-                      $"after {q.minTrials} trials or at {q.maxTrials}. Altered side: {config.alteredSide}.");
-
-            // The round clock and the staircase have to describe the same block.
-            if (RoundClock.Instance != null) RoundClock.Instance.BeginBlock(config);
+            // The trial clock and the staircase have to describe the same block, so the runner is
+            // handed the config here rather than reading it for itself.
+            if (ShockwaveTrialRunner.Instance != null)
+                ShockwaveTrialRunner.Instance.BeginRound(config);
 
             ApplyTaskParams();
             if (scoreManager != null) scoreManager.SetScoring(config.hitPoints, config.missPoints);
 
-            // The base rate from now on, not from the next LateUpdate — the block's first prompt
-            // should already be drawn at it.
-            ApplyCap();
+            ApplyFps();
+            ApplyLatency();
             RefreshDebugText();
             if (uiManager != null) uiManager.RefreshProgress();   // fresh staircase, empty bar
         }
 
-        /// <summary>Stops the block. The final estimate stays readable through
-        /// <see cref="ActiveStaircase"/> until the next BeginBlock replaces it.</summary>
-        public void EndBlock()
-        {
-            _blockActive = false;
-            CancelTrial();
-        }
+        /// <summary>Stops driving the staircase; the round's final estimate stays readable
+        /// through <see cref="ActiveStaircase"/> until the next BeginRound replaces it.</summary>
+        public void EndRound() => _roundActive = false;
 
         /// <summary>
-        /// Switches practice on or off. While on, every round shows <paramref name="pair"/> — its
-        /// higher rate as the base, its lower one on the altered side — instead of the block's base
-        /// and QUEST+'s choice, the game idles at the pair's higher rate between rounds, and
-        /// responses never reach the posterior. The staircase is left untouched, so the main run
-        /// starts from its prior.
+        /// Switches warm-up practice on or off. While on, every stutter is
+        /// <paramref name="stutterMs"/> instead of the staircase's chosen value, and
+        /// <see cref="ReportShotResult"/> discards responses — so nothing the participant does
+        /// during practice can move the QUEST+ posterior. The staircase is left completely
+        /// untouched rather than rebuilt, so the real run starts from its uniform prior with the
+        /// stimulus QUEST+ had already selected.
         /// </summary>
-        public void SetPractice(bool on, PracticePair pair = default)
+        public void SetPractice(bool on, float stutterMs)
         {
-            _practiceMode = on && pair.highFps > 0;
-            _practicePair = pair;
-            RefreshDebugText();
+            _practiceMode      = on;
+            _practiceStutterMs = Mathf.Max(0f, stutterMs);
         }
 
-        // The cap between rounds, when no split is open.
-        int NeutralFps => _practiceMode ? _practicePair.highFps
-                        : _config != null ? _config.baseFps : 0;
+        IJndStaircase BuildStaircase(StudyConfig config)
+        {
+            Dictionary<string, string> d = config.Row;
 
+            // Frame-time stutter (FT) is driven by the Bayesian QUEST+ staircase; the other
+            // three modes use the legacy coarse/fine one, which has a different config shape.
+            if (testMode == TestMode.FrameTimeStutter)
+            {
+                if (useManualLevelList)
+                    Debug.LogWarning("[PerturbationController] useManualLevelList is ignored for " +
+                                      "FrameTimeStutter — FT always runs the QUEST+ staircase.");
+
+                QuestPlusConfig qcfg = QuestPlusConfig.FromCsv(d);
+                spikeUseBusyWait = true; // busy-wait for an accurate CPU stutter
+
+                Debug.Log($"[PerturbationController] QUEST+ ready for '{config.label}' — " +
+                          $"stim=[{qcfg.stimGrid[0]:0.0},{qcfg.stimGrid[qcfg.stimGrid.Length - 1]:0.0}]ms  " +
+                          $"thresholdGrid=[{qcfg.threshGrid[0]:0.0},{qcfg.threshGrid[qcfg.threshGrid.Length - 1]:0.0}]ms  " +
+                          $"slope=[{qcfg.slopeGrid[0]:0.1},{qcfg.slopeGrid[qcfg.slopeGrid.Length - 1]:0.1}]  " +
+                          $"guessRate={qcfg.guessRate:0.00}  maxTrials={qcfg.maxTrials}  " +
+                          $"closeRadius={closeRadius}  showHitZone={showHitZone}");
+                return new QuestPlusStaircase(qcfg);
+            }
+
+            UfoStaircaseConfig cfg;
+            switch (testMode)
+            {
+                // ── FPS drop (value = fps drop from baseline) ────────────────
+                case TestMode.FPS:
+                    if (useManualLevelList)
+                    {
+                        cfg = ManualConfig(config);
+                    }
+                    else
+                    {
+                        cfg          = UfoStaircaseConfig.FromCsv(d, "startDropFps", "minDropFps", "maxDropFps",
+                                                                  2f, 2f, 100f);
+                        _baselineFps = CsvTable.GetFloat(d, "baselineFps", 144f);
+                    }
+                    fpsLeft = Mathf.RoundToInt(_baselineFps);
+                    break;
+
+                // ── Input latency (value = added latency in ms) ──────────────
+                case TestMode.Latency:
+                    cfg = useManualLevelList
+                        ? ManualConfig(config)
+                        : UfoStaircaseConfig.FromCsv(d, "startMs", "minMs", "maxMs", 5f, 5f, 300f);
+                    latencyLeftMs       = 0f;  // baseline = 0 ms
+                    latencyRampDuration = 0.08f;
+                    break;
+
+                // ── Mouse acceleration scale (value = scale multiplier) ──────
+                default: // Acceleration
+                    cfg = useManualLevelList
+                        ? ManualConfig(config)
+                        : UfoStaircaseConfig.FromCsv(d, "startMult", "minMult", "maxMult", 1.05f, 1.05f, 6f);
+                    break;
+            }
+
+            Debug.Log($"[PerturbationController] Staircase ready for '{config.label}' " +
+                      $"({(useManualLevelList ? "manual list" : "dynamic")}) — " +
+                      $"start={cfg.startValue:0.0}  min={cfg.minValue:0.0}  max={cfg.maxValue:0.0}  " +
+                      $"coarseFactor={cfg.coarseFactor}  fineStep={cfg.fineStep}  " +
+                      $"closeRadius={closeRadius}  showHitZone={showHitZone}");
+            return new UfoStaircase(cfg);
+        }
+
+        // ── Task params come from Inspector (not CSV) ──────────────────────────
         void ApplyTaskParams()
         {
             if (scoreManager != null) scoreManager.SetScoreRadius(closeRadius);
@@ -403,192 +647,270 @@ namespace JndUfo
             if (towerManager != null)
             {
                 towerManager.hitZoneRadius  = closeRadius;
-                towerManager.showHitZone    = showHitZone;
-                towerManager.hitZoneOpacity = 0.6f;    // the target size has to read clearly in the reveal
+                // Never on an shockwave block, whatever the config column says. The zone lines
+                // mark the width a shot has to land inside — a purely spatial cue — and the cannon
+                // levels the whole plane, so nothing about where the participant is affects the
+                // outcome. Drawing a hit radius for it would advertise an aiming task that is not
+                // being run, and invite them to spend the response window lining up instead of
+                // watching for the stutter.
+                towerManager.showHitZone    = showHitZone && Weapon != WeaponKind.Shockwave;
+                // The beam over the tower is the same kind of cue — it answers "where was it?",
+                // which only an aimed shot asks. The cannon's reveal plays ShockwaveAftershock
+                // in its place (see GameManager.RevealSequence).
+                towerManager.showTowerBeam  = Weapon != WeaponKind.Shockwave;
+                towerManager.hitZoneOpacity = 0.35f;
                 towerManager.RefreshHitZone();
             }
         }
 
-        // ── Trials ───────────────────────────────────────────────────────────
-
-        /// <summary>The Δ the next round will present: the practice pair's during practice,
-        /// otherwise QUEST+'s current choice.</summary>
-        int PendingDiffFps
+        // Manual levels now live in the config's semicolon-separated `manualLevels` cell,
+        // which is where the old one-value-per-row *ManualList.csv files were merged to.
+        UfoStaircaseConfig ManualConfig(StudyConfig config)
         {
-            get
-            {
-                if (_practiceMode) return _practicePair.DiffFps;
-                if (_staircase != null) return Mathf.Max(1, Mathf.RoundToInt(_staircase.CurrentValue));
-                return _config != null ? _config.maxDiffFps : 0;
-            }
+            List<float> levels = config.manualLevels;
+            if (levels == null || levels.Count == 0)
+                Debug.LogWarning($"[PerturbationController] '{config.label}' sets useManualLevelList " +
+                                  "but its manualLevels cell is empty — the staircase will have no levels to step through.");
+
+            return UfoStaircaseConfig.FromManualList(levels ?? new List<float>(), manualStartIndex,
+                                                      manualReversalsToEnd, manualReversalsToAverage, manualMaxTrials);
         }
 
         /// <summary>
-        /// Opens a round's split: draws which side is altered, fixes Δ for the round, and starts
-        /// measuring what each side actually delivers. Called at the round's starting gun —
-        /// GameManager's GO! between rounds, ExperimentDirector's at a phase's first round — so the
-        /// frame rates are already in force as the veil lifts.
+        /// Called by GameManager after each shot. Correct = player hit (within closeRadius);
+        /// the perturbation went undetected. Incorrect = miss; perturbation disrupted tracking.
         /// </summary>
-        public void BeginTrial()
-        {
-            if (_config == null) return;
-
-            int diff = PendingDiffFps;
-            Side altered = _config.alteredSide switch
-            {
-                AlteredSideMode.Left  => Side.Left,
-                AlteredSideMode.Right => Side.Right,
-                _                     => Random.value < 0.5f ? Side.Left : Side.Right,
-            };
-
-            _trial = new TrialRecord
-            {
-                valid                = true,
-                practice             = _practiceMode,
-                diffFps              = diff,
-                baseFps              = _practiceMode ? _practicePair.highFps : _config.baseFps,
-                alteredFps           = _practiceMode ? _practicePair.lowFps  : _config.AlteredFpsFor(diff),
-                alteredSide          = altered,
-                startedRealtime      = Time.realtimeSinceStartup,
-                lastCrossingRealtime = float.NaN,
-            };
-
-            // The frame that is running now was paced by the base cap; crediting it to either side
-            // would put a base-rate frame into the altered side's measurement.
-            _appliedPace = Pace.None;
-            SplitActive  = true;
-            FrameLimiter.ResetOverruns();
-            ApplyCap();
-            RefreshDebugText();
-        }
+        public void ReportShotResult(bool isHit) => ReportShotResult(isHit, feedStaircase: true);
 
         /// <summary>
-        /// Closes the round's split and latches it into <see cref="LastTrial"/>. Called the moment the
-        /// response is resolved, before anything is scored or logged. Safe to call twice: a second
-        /// call with no round open just returns the latched one.
+        /// As above, but with the option to withhold the response from the posterior.
+        ///
+        /// <paramref name="feedStaircase"/> is false for a shockwave press made before the round's
+        /// first stutter under <see cref="EarlyFirePolicy.DiscardAndRetry"/>: no stutter had been
+        /// delivered, so the press answered nothing and is not evidence about the threshold. The
+        /// stimulus is left untouched, which is what the round's stutter then presents — QUEST+
+        /// selects the next stimulus as part of folding in a response, so not folding one in is
+        /// exactly what "same trial, still pending" means.
         /// </summary>
-        public TrialRecord EndTrial()
+        public void ReportShotResult(bool isHit, bool feedStaircase)
         {
-            if (!SplitActive) return LastTrial;
+            // Captured before anything below can advance the staircase. RecordResponse
+            // folds in the response AND immediately selects the next stimulus, so by the
+            // time the director logs the trial, CurrentStimulusValue is already the NEXT
+            // one — logging that would pair every response with the wrong stimulus.
+            PresentedStimulusMs = CurrentStimulusValue;
 
-            _trial.lateFrames = _config != null && _config.frameLimiter == FrameLimiterMode.Precise
-                ? FrameLimiter.Overruns : 0;
-            LastTrial   = _trial;
-            SplitActive = false;
-            ApplyCap();
-            RefreshDebugText();
-            return LastTrial;
-        }
-
-        /// <summary>Drops a round's split without recording it — the phase or block ended under it.</summary>
-        public void CancelTrial()
-        {
-            if (!SplitActive) return;
-            SplitActive = false;
-            ApplyCap();
-        }
-
-        /// <summary>
-        /// Folds a response into QUEST+. Correct = the shot landed on the hidden tower: the
-        /// participant located the boundary between the two frame rates. Call after
-        /// <see cref="EndTrial"/>; the round's Δ is fixed in the latched trial, so the staircase moving
-        /// on to the next Δ here cannot change what gets logged against this response.
-        /// </summary>
-        public void ReportResponse(bool isHit)
-        {
-            // Practice responses are warm-up only — they must never inform the posterior.
+            if (!feedStaircase) return;
+            // Practice shots are warm-up only — they must never inform the posterior.
             if (_practiceMode) return;
-            if (_staircase == null) return;
-            // A response that lands after the block closed must not move the posterior.
-            if (ExperimentDirector.Instance != null && !_blockActive) return;
+            if (_staircase == null || !useStaircase) return;
+            // A shot that lands after the round timer expired must not move the posterior —
+            // its stimulus belongs to a round that is already being scored.
+            if (ExperimentDirector.Instance != null && !_roundActive) return;
 
-            _prevDiff = _staircase.CurrentValue;
-            _staircase.RecordResponse(isHit);
+            _prevStimValue = _staircase.CurrentValue;
+            float newValue = _staircase.RecordResponse(isHit);
+
+            // Immediately propagate the new staircase value
+            switch (testMode)
+            {
+                case TestMode.FrameTimeStutter:
+                    spikeMagnitudeMs = newValue;
+                    break;
+                case TestMode.FPS:
+                    fpsRight = Mathf.RoundToInt(Mathf.Max(1f, _baselineFps - newValue));
+                    break;
+                case TestMode.Latency:
+                    latencyRightMs = newValue;
+                    break;
+                case TestMode.Acceleration:
+                    // ScaleMultiplier is applied in ApplyAcceleration each frame
+                    break;
+            }
+
             RefreshStaircaseEstimates();
+
+            if (_staircase.IsFinished)
+                Debug.Log($"[PerturbationController] Staircase finished. JND estimate = {_staircase.JndEstimate():0.00}");
             RefreshDebugText();
         }
 
         // ── Debug UI ─────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Rebuilds the debug HUD. Public so the round clock can refresh it once a second; otherwise
-        /// it is rebuilt only when a round opens or closes or a response moves the staircase. Off
-        /// for participant sessions — see UIManager.showDebug — and nothing here is built then.
+        /// The round clock line for the debug HUD: elapsed seconds against the wall-clock cap,
+        /// and stutters delivered against the per-round cap. This is the ONLY place the round
+        /// bounds are visible — the participant is never shown a countdown, because a visible
+        /// clock is a second stimulus to time against. Empty when no round is running.
         /// </summary>
+        string RoundClockLine()
+        {
+            ShockwaveTrialRunner r = ShockwaveTrialRunner.Instance;
+            if (r == null || !r.TrialRunning || _config == null) return "";
+
+            string clock = _config.roundTimeoutSec > 0f
+                ? $"{r.RoundElapsedSec:0}/{_config.roundTimeoutSec:0}s"
+                : $"{r.RoundElapsedSec:0}s";
+            // The runner's cap, not the config's: shockwave practice runs a shorter allowance.
+            int cap = r.SpikeCap;
+            string spikes = cap > 0
+                ? $"{r.RoundSpikes}/{cap}"
+                : r.RoundSpikes.ToString();
+            return $"\nRound: {clock}   spikes {spikes}";
+        }
+
+        /// <summary>Rebuilds the debug HUD line. Public so the round clock can refresh it once a
+        /// second; it is otherwise only rebuilt when a response moves the staircase.</summary>
         public void RefreshDebugText()
         {
-            // Plain ASCII throughout: the HUD font (StarShield) has nothing beyond it, and the TMP
-            // fallback has no Greek or arrows — a Δ or a θ here would draw as nothing.
+            // Nothing below is cheap — several interpolated strings, rebuilt on every response and
+            // once a second while a round runs — and none of it is worth doing for a readout that
+            // is switched off. It is off for every participant session; see UIManager.showDebug.
             if (uiManager == null || !uiManager.DebugVisible) return;
-            if (_config == null) { uiManager.SetDebugText("FPS JND - no block loaded"); return; }
 
-            var sb = _debug;
-            sb.Length = 0;
+            string mode = testMode switch {
+                TestMode.FrameTimeStutter => "FT",
+                TestMode.FPS              => "FPS",
+                TestMode.Latency          => "Lat",
+                _                         => "Accel"
+            };
+            string unit = testMode switch {
+                TestMode.FrameTimeStutter => " ms",
+                TestMode.FPS              => " fps↓",
+                TestMode.Latency          => " ms",
+                _                         => "×"
+            };
 
-            TrialRecord t = SplitActive ? _trial : LastTrial;
+            string round = RoundClockLine();
 
-            sb.Append("FPS JND | ").Append(string.IsNullOrEmpty(DebugLabel) ? "block " + _config.blockIndex : DebugLabel)
-              .Append(" | base ").Append(_config.baseFps).Append(' ').Append(_config.DirectionCell)
-              .Append(" | diff ").Append(_config.minDiffFps).Append('-').Append(_config.maxDiffFps)
-              .Append(" step ").Append(_config.diffStepFps)
-              .Append(" | ").Append(_config.LimiterCell).Append(" limiter\n");
-
-            if (t.valid)
+            if (_staircase == null)
             {
-                sb.Append(SplitActive ? "LIVE  " : "last  ")
-                  .Append("diff ").Append(t.diffFps).Append(": ").Append(t.baseFps).Append(" vs ")
-                  .Append(t.alteredFps).Append(" fps, altered on ")
-                  .Append(t.alteredSide == Side.Left ? "LEFT" : "RIGHT")
-                  .Append("   (L ").Append(t.LeftFps).Append(" | R ").Append(t.RightFps).Append(")\n");
-                sb.Append("measured  L ").Append(Fmt(t.MeasuredLeftFps))
-                  .Append(" | R ").Append(Fmt(t.MeasuredRightFps))
-                  .Append("   crossings ").Append(t.crossings);
-                if (_config.frameLimiter == FrameLimiterMode.Precise)
-                    sb.Append("   late ").Append(SplitActive ? FrameLimiter.Overruns : t.lateFrames);
-                sb.Append('\n');
+                uiManager.SetDebugText($"[{mode}]  staircase off{round}");
+                return;
+            }
+
+            float cur  = _staircase.CurrentValue;
+            int trials = _staircase.TrialCount;
+            string prevStr = _prevStimValue >= 0f ? $"{_prevStimValue:0.0}{unit}" : "—";
+
+            if (_staircase is QuestPlusStaircase qp)
+            {
+                uiManager.SetDebugText(
+                    $"[{mode}]  {cur:0.0}{unit}   QUEST+\n" +
+                    $"Prev: {prevStr}   T:{trials}/{qp.Config.maxTrials}   Streak:{qp.Streak}\n" +
+                    $"θ̂={qp.JndEstimate():0.0}{unit}  SD={qp.PosteriorThresholdSD():0.0}  β̂={qp.SlopeEstimate():0.00}" +
+                    round);
+                return;
+            }
+
+            var uf = (UfoStaircase)_staircase;
+            int rev    = uf.ReversalCount;
+            int revEnd = uf.Config.reversalsToEnd;
+
+            uiManager.SetDebugText(
+                $"[{mode}]  {cur:0.0}{unit}   {uf.Phase}\n" +
+                $"Prev: {prevStr}   T:{trials}  R:{rev}/{revEnd}   Streak:{uf.Streak}{round}");
+        }
+
+        // ── Apply helpers ────────────────────────────────────────────────────
+
+        void ApplyFps()
+        {
+            int fps;
+            if (testMode == TestMode.FPS)
+            {
+                if (useStaircase && _staircase != null)
+                {
+                    // Right side = perturbed (limited FPS); left = uncapped baseline.
+                    int limitedFps = Mathf.Max(1, Mathf.RoundToInt(_baselineFps - _staircase.CurrentValue));
+                    fps = CurrentSide == Side.Right ? limitedFps : Mathf.RoundToInt(_baselineFps);
+                }
+                else
+                {
+                    fps = CurrentSide == Side.Left ? fpsLeft : fpsRight;
+                }
             }
             else
             {
-                sb.Append("next diff ").Append(PendingDiffFps).Append(": ")
-                  .Append(_practiceMode ? _practicePair.highFps : _config.baseFps).Append(" vs ")
-                  .Append(_practiceMode ? _practicePair.lowFps : _config.AlteredFpsFor(PendingDiffFps))
-                  .Append(" fps\n");
+                // The block's own cap, not unconditionally uncapped. This runs every frame, so
+                // without it a block's fpsCap would be overwritten the frame after it was set.
+                fps = _applicationFpsCap > 0 ? _applicationFpsCap : -1;
             }
 
-            sb.Append("now ").Append(CurrentSide == Side.Left ? "LEFT" : "RIGHT")
-              .Append(" @ ").Append(CurrentTargetFps).Append(" fps cap");
-            if (_config.frameLimiter == FrameLimiterMode.Precise)
-                sb.Append(" | spin ").Append(FrameLimiter.LastSpinMs.ToString("0.0")).Append(" ms");
-            sb.Append('\n');
-
-            if (_practiceMode)
-            {
-                sb.Append("PRACTICE ").Append(_practicePair.lowFps).Append(" vs ")
-                  .Append(_practicePair.highFps).Append(" fps - responses not counted");
-            }
-            else if (_staircase != null)
-            {
-                sb.Append("QUEST+ trial ").Append(_staircase.TrialCount).Append('/').Append(_staircase.Config.maxTrials)
-                  .Append("  threshold ").Append(Fmt(ThresholdEstimate))
-                  .Append("  SD ").Append(Fmt(PosteriorSD))
-                  .Append("  slope ").Append(SlopeEstimateValue.ToString("0.00"))
-                  .Append("  lapse ").Append(LapseEstimateValue.ToString("0.000"));
-                if (!float.IsNaN(_prevDiff)) sb.Append("  prev diff ").Append(_prevDiff.ToString("0"));
-            }
-
-            RoundClock clock = RoundClock.Instance;
-            if (clock != null && clock.TrialRunning)
-            {
-                sb.Append("\nround ").Append(clock.RoundElapsedSec.ToString("0"));
-                if (_config.roundTimeoutSec > 0f) sb.Append('/').Append(_config.roundTimeoutSec.ToString("0"));
-                sb.Append(" s");
-                if (_config.maxCrossingsPerRound > 0)
-                    sb.Append("   crossings ").Append(TrialCrossings).Append('/').Append(_config.maxCrossingsPerRound);
-            }
-
-            uiManager.SetDebugText(sb.ToString());
+            if (Application.targetFrameRate != fps)
+                Application.targetFrameRate = fps;
+            CurrentFps = fps < 0 ? 9999 : fps;
         }
 
-        static string Fmt(float v) => float.IsNaN(v) ? "-" : v.ToString("0.0");
+        void ApplyLatency()
+        {
+            float targetMs;
+            if (testMode == TestMode.Latency)
+            {
+                float rightMs = useStaircase && _staircase != null
+                    ? _staircase.CurrentValue
+                    : latencyRightMs;
+                targetMs = CurrentSide == Side.Left ? latencyLeftMs : rightMs;
+            }
+            else targetMs = 0f;
+
+            float range  = Mathf.Abs(latencyRightMs - latencyLeftMs);
+            float rateMs = latencyRampDuration > 0f
+                ? range / latencyRampDuration
+                : float.MaxValue;
+            _rampedLatencyMs = Mathf.MoveTowards(_rampedLatencyMs, targetMs,
+                                                  rateMs * Time.unscaledDeltaTime);
+
+            if (_inputLatency != null) _inputLatency.CurrentLatencySeconds = _rampedLatencyMs / 1000f;
+            CurrentLatencyMs = _rampedLatencyMs;
+        }
+
+        void ApplyAcceleration()
+        {
+            if (_accelBuffer == null) return;
+
+            bool enabled = testMode == TestMode.Acceleration &&
+                           (CurrentSide == Side.Left ? accelerationLeft : accelerationRight);
+            _accelBuffer.AccelerationEnabled = enabled;
+
+            if (useStaircase && _staircase != null && testMode == TestMode.Acceleration && enabled)
+                _accelBuffer.ScaleMultiplier = _staircase.CurrentValue;
+            else
+                _accelBuffer.ScaleMultiplier = 1f;
+        }
+
+        void ScheduleSpike(float ms) { _spikePending = true; _spikePendingMs = ms; }
+
+        /// <summary>
+        /// Blocks the main thread for <paramref name="ms"/> and returns how long it
+        /// actually blocked for.
+        ///
+        /// Requested and delivered are not the same number. The busy-wait can only exit
+        /// on a timestamp poll, so it always overshoots by up to one loop iteration, and
+        /// Thread.Sleep overshoots by however long the OS scheduler takes to come back —
+        /// tens of milliseconds under load. Returning the measured value lets the logs
+        /// record the stimulus that was delivered rather than the one that was asked for.
+        /// </summary>
+        float Stutter(float ms)
+        {
+            if (ms <= 0f) return 0f;
+
+            var  ratio = ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio;
+            long start = ProfilerUnsafeUtility.Timestamp;
+
+            if (spikeUseBusyWait)
+            {
+                long targetNs = (long)(ms * 1_000_000.0);
+                while (true)
+                {
+                    long spun = ProfilerUnsafeUtility.Timestamp - start;
+                    if (spun * ratio.Numerator / ratio.Denominator >= targetNs) break;
+                }
+            }
+            else Thread.Sleep(Mathf.RoundToInt(ms));
+
+            long elapsed = ProfilerUnsafeUtility.Timestamp - start;
+            return (float)(elapsed * ratio.Numerator / (double)ratio.Denominator / 1_000_000.0);
+        }
     }
 }

@@ -1,120 +1,120 @@
 # What is in each file
 
 The two config files the study is driven from, and the three logs it produces.
-Config lives in `Data/`; logs land in `Data/Logs/<sessionId>_<runId>/`.
+Config lives in `Data/`; logs land in `Data/Logs/<sessionId>/`.
 
-The session and shot logs additionally carry **`cfg_<column>` for every column of
-`ExperimentConfig.csv`**, so either file states the conditions it was recorded under
-without joining back to anything. The frame log does not (join on `blockIndex`).
-
-The frame-time-stutter study that came before this one wrote different columns; its logs
-are in the git history and `Analysis/build_db.py` still reads them.
+All three logs additionally carry **`cfg_<column>` for every column of
+`ExperimentConfig.csv`** (30 today), so any one file states the conditions it was
+recorded under without joining back to anything.
 
 ---
 
-## `Data/ExperimentConfig.csv` — one row per setting (3 rows)
+## `Data/ExperimentConfig.csv` — one row per setting (4 rows)
 
 Row order here is the settings' **identity**, not the order anyone plays them in. Row
 number = `blockIndex` in the logs.
 
 | Group | Columns |
 |---|---|
-| Stimulus | `baseFps`; `direction` (`down` = altered side at base − Δ, `up` = base + Δ); `minDiffFps`, `maxDiffFps`, `diffStepFps` (the Δ grid QUEST+ searches: min, min + step, … max); `alteredSide` (`random` per round / `left` / `right`); `frameLimiter` (`precise` busy-wait / `unity` targetFrameRate) |
-| Round bounds | `maxCrossingsPerRound` (0 = no cap), `roundTimeoutSec` |
-| Scoring | `hitPoints`, `missPoints` (`hitPoints` also defines `isHit`) |
-| QUEST+ | `threshCount` (θ grid over `minDiffFps`–`maxDiffFps`), `slopeMin/Max/Count`, `lapseMin/Max/Count`, `guessRate` (γ = 0.244, geometric chance on 16:9), `maxTrials`, `minTrials`, `stopSD` (fps) |
+| Condition | `weapon` (`laser`/`shockwave`), `unityApplicationFps` (0 = uncapped) |
+| Practice | `practiceStuttersMs` — the ladder for the **first** block of this weapon, `;`-separated (5 values); `practiceRepeatStuttersMs` — the ladder for the **repeat** block (1 value) |
+| Shockwave timing | `swSpikeDelayMinSec`, `swSpikeDelayMaxSec` (first stutter 1–3.5 s after the gun), `swWindowSec` (0.9 s), `swRespikeMinSec`, `swRespikeMaxSec` (re-presentation 1–3.5 s after an unanswered window closes — the same span as the first delay), `swMaxEarlyPerRound` (1 forgiven early press). Laser rows carry these columns too (1.5–3 s, 0.4 s) but never use them |
+| Round bounds | `maxSpikesPerRound`, `roundTimeoutSec` |
+| Scoring | `hitPoints`, `missPoints` (still define `isHit` for the laser, and still logged, even though the HUD now shows a hit/miss tally instead of a score) |
+| QUEST+ stimulus grid | `stimMinMs`, `stimMaxMs`, `stimCount` |
+| QUEST+ θ grid | `threshMinMs`, `threshMaxMs`, `threshCount` |
+| QUEST+ β grid | `slopeMin`, `slopeMax`, `slopeCount` |
+| QUEST+ λ grid | `lapseMin`, `lapseMax`, `lapseCount` |
+| QUEST+ rules | `guessRate` (γ — chance level, fixed per task: 0.244 laser, from the scene geometry on 16:9; 0.36 shockwave = window / first-delay spread = 0.9 / 2.5), `maxTrials`, `minTrials`, `stopSD` |
 
-Not in the file, pinned in `StudyConfig`: `closeRadius` = 5.5, `crossingDeadZone` = 0.25,
-`fireCooldown` = 0.25 s, `revealHoldSec` = 2 s, `readyBeatSec` = 0.5 s.
-
-## `Data/PracticeRounds.csv` — the practice phase
-
-`round, fpsA, fpsB`: one practice round per row, played in order before MAIN 1. The higher rate is
-the round's base, the lower its altered side; which side of the tower is altered is random.
+Not in the file, pinned in `StudyConfig`: `closeRadius` = 5.5, `fireCooldown` = 0.25 s,
+`swEarlyLockoutSec` = 1 s, `revealHoldSec` = 1.5 s, `readyBeatSec` = 0.5 s, and
+`practiceMaxMissesPerRound` = 3 — a shockwave **practice** round closes as a miss after its
+third unanswered window instead of the tenth, so the ladder keeps moving.
 
 ## `Data/LatinSquare.csv` — one row per session, cycled
 
-`row, pos1 … posN`. Each cell is a 1-based row number in `ExperimentConfig.csv`; the row a
-session uses is `((sessionId − 1) mod rowCount) + 1`. Comment lines (`#`) are ignored.
+`row, pos1 … posN`. Each cell is a 1-based row number in `ExperimentConfig.csv`; the row
+a session uses is `((sessionId − 1) mod rowCount) + 1`. Comment lines (`#`) are ignored.
 
-With 3 settings the shipped design is a **Williams** design of 6 rows (the 3×3 square plus
-its mirror): every setting takes every position equally often *and* every ordered pair of
-settings occurs equally often. Validated at load.
+The shipped square is a 4×4 **Williams** square: every setting takes every position
+equally often *and* every ordered pair of settings occurs equally often, so neither
+position nor carry-over is confounded with the setting. Validated at load — a square that
+is not Latin, or whose width does not match the config's row count, is rejected loudly and
+replaced by a generated one.
 
 ---
 
-## Identity columns — first in all three logs
-
-`sessionId`, `runId`, `blockIndex` (which setting), `blockOrdinal` (when in this session),
-`latinRow`, `latinOrder` (e.g. `3;1;2`), `baseFps`, `direction`, `frameLimiter`.
-
-Practice rows carry `blockIndex = 0`, `blockOrdinal = 0`, blank `cfg_*`, and the round's own
-`baseFps` (each practice pair has its own base).
-
-## `SessionLog_<id>.csv` — one row per block
+## `SessionLog_<id>.csv` — one row per block (69 columns + `cfg_*`)
 
 | Group | Columns |
 |---|---|
-| Where / when | `displayHz`, `resolution`, `startIso`, `endIso`, `sessionDurationSec`, `playDurationSec`, `endReason` (`converged` / `maxTrials` / `abandoned`) |
-| QUEST+ result | `jndDiffFps` (posterior **mean** of θ, fps), `jndAlteredFps` (= base ∓ jnd), `jndFrameTimeDiffMs`, `sd`, `priorSd`, `jndMedianDiffFps`, `jndModeDiffFps`, `jndCI95LoDiffFps`, `jndCI95HiDiffFps`, `jndRangeEdge` (`top` / `bottom` / empty: the estimate is pressed against an end of the Δ range), `slopeEstimate` (β̂), `lapseEstimate` (λ̂), `staircaseTrials`, `lastDiffFps` |
-| Performance | `trials`, `shotsFired`, `hits`, `accuracy`, `score`, `roundsExpired`, `roundsCrossingCapped`, `avgRoundDurationSec` |
-| Exploration | `avgCrossingsPerRound`, `shotsWithoutCrossing`, `avgSinceLastCrossingSec` |
-| Shot geometry (world units on X) | `avgMissDistX`, `avgMissDistXMissesOnly`, `medianMissDistX`, `sdMissDistX`, `maxMissDistX` |
-| Movement | `totalMousePathPx`, `avgMouseSpeedPxPerSec`, `peakMouseSpeedPxPerSec`, `totalUfoPathWorld` |
-| Frame delivery | `frameCount`, `liveFrames`, `baseSideFrames`, `baseSideMeasuredFps`, `baseFrameTimeSdMs`, `alteredSideFrames`, `alteredFrameTimeErrPct`, `alteredFrameTimeSdMs`, `slowFrames`, `maxLiveFrameTimeMs` |
+| Identity | `sessionId`, `blockIndex` (which setting), `blockOrdinal` (when in this session), `latinRow`, `latinOrder` (e.g. `2;3;1;4`), `weaponRun` (1 = first block of this weapon, 2 = repeat), `unityApplicationFps`, `testMode`, `weapon` |
+| Timing | `startIso`, `endIso`, `sessionDurationSec`, `playDurationSec`, `endReason` (`converged` / `maxTrials` / `timeCap` / `abandoned`) |
+| QUEST+ result | `jndEstimateMs` (posterior **mean** of θ), `sd`, `priorSd`, `jndMedianMs`, `jndModeMs`, `jndCI95LoMs`, `jndCI95HiMs`, `slopeEstimate` (β̂), `lapseEstimate` (λ̂), `staircaseTrials`, `lastStimulusMs` |
+| Performance | `shotsFired`, `shotsHit`, `accuracy`, `score`, `shotsPerMinute`, `avgShotIntervalSec` |
+| Stutters before responses | `shotsBeforeSpike`, `shotsAfterSpike`, `avgSpikesBeforeShot`, `avgSinceLastSpikeSec`, `minSinceLastSpikeSec`, `maxSinceLastSpikeSec` (over responses that fired with a stutter somewhere behind them — both weapons) |
+| Shockwave outcomes | `swDetections`, `swEarlyFires`, `swLateFires`, `swTimeouts`, `swSwallowedPresses`, `trialsNotCounted` |
+| Reaction times | `avgReactionSec`, `sdReactionSec`, `minReactionSec`, `maxReactionSec` — over **hits**, either weapon (shockwave detections; laser hits with a crossing behind them) |
+| Miss geometry (world units on X) | `cumMissDistX`, `avgMissDistX`, `cumMissDistXMissesOnly`, `avgMissDistXMissesOnly`, `medianMissDistX`, `sdMissDistX`, `maxMissDistX` |
+| Movement | `totalMousePathPx`, `avgMouseSpeedPxPerSec`, `peakMouseSpeedPxPerSec`, `mouseMovementPerShot`, `totalUfoPathWorld` |
+| Frame timing | `frameCount`, `avgFrameTimeMs`, `p95FrameTimeMs`, `p99FrameTimeMs`, `maxFrameTimeMs`, `avgFpsNoStutter`, `avgFrameTimeMsNoStutter`, `stutterFramesExcluded` |
+| Perturbation delivered | `spikesFired`, `totalStutterMs` |
 
-**Check frame delivery before trusting `jndDiffFps`.** The stimulus is the frame rate, so a
-block whose `baseSideMeasuredFps` fell short of `baseFps`, or whose `alteredFrameTimeErrPct`
-is well above 0, presented smaller differences than QUEST+ was told.
+`jndEstimateMs` is the posterior mean. The median/mode/CI are there because the θ
+posterior sits on a bounded grid and skews near its ends, where mean ± 2·`sd` is not the
+interval the posterior actually assigns 95% to. Mean far from mode ⇒ the estimate is
+pressed against the grid and should not be read at face value.
 
-**Drop or bound any block with `jndRangeEdge` set.** A participant who never locates the
-boundary piles the posterior against the largest Δ, its SD collapses there, and the stop rule
-reports `converged` within ~20 rounds on a value that only means "above the range".
+## `ShotLog_<id>.csv` — one row per **response** (49 columns + `cfg_*`)
 
-`jndDiffFps` is the posterior mean. The median/mode/CI are there because the θ posterior sits
-on a bounded grid and skews near its ends, where mean ± 2·`sd` is not the interval the
-posterior actually assigns 95% to. Mean far from mode ⇒ the estimate is pressed against the
-grid and should not be read at face value.
-
-## `ShotLog_<id>.csv` — one row per **round**
+Not one row per round: a shockwave round that takes an early press and a late press before
+its detection writes three rows sharing a `roundNumber`, told apart by `attemptInRound`,
+and only the last has `roundEnded` set.
 
 | Group | Columns |
 |---|---|
-| Phase | `closeRadius`, `phase` (`practice`/`main`), `phaseStartIso` (absolute time = `phaseStartIso + timeSinceStartSec`) |
-| Position in run | `roundNumber`, `timeSinceStartSec` |
-| The split presented | `diffFps` (the stimulus), `alteredFps`, `alteredSide` (`Left`/`Right` of the tower) |
-| What was delivered | `measuredBaseFps`, `measuredAlteredFps` (blank if the UFO never went there), `baseSideSec`, `alteredSideSec`, `lateFrames` (precise limiter: frames that overran) |
-| Exploration | `crossings`, `lastCrossingAtSec`, `sinceLastCrossingSec` |
-| Outcome | `outcome` (`shot` / `expired` / `crossingCap`), `playerFired`, `isHit`, `countedByStaircase`, `totalScore` |
-| Timing | `trialStartSec` (firing handed back at GO!), `firedAtSec`, `roundDurationSec` |
-| Geometry | `hitX`, `missDistX` (`hitX − towerX`), `towerX`, `ufoY`, `side` (the side the shot was fired from) |
-| Posterior after this round | `threshDiffFps`, `sd`, `slopeEstimate`, `lapseEstimate` |
+| Identity | `sessionId`, `blockIndex`, `blockOrdinal`, `latinRow`, `latinOrder`, `weaponRun`, `unityApplicationFps`, `testMode`, `closeRadius`, `weapon` |
+| Phase | `phase` (`practice`/`main`), `phaseStartIso` (absolute time = `phaseStartIso + timeSinceStartSec`) |
+| Position in run | `roundNumber`, `attemptInRound`, `roundEnded` |
+| Clock | `timeSinceStartSec`, `timeSinceLastShotSec` |
+| Stimulus | `stimulusMs` (requested), `spikesSinceLastShot`, `spikeIndexInRound`, `swallowedPresses` |
+| Stutters actually delivered since the previous response | `stuttersMs`, `stutterAtSec` (both `;`-separated, oldest first — every stutter between two responses, with when each one landed), `stutterMeanMs`, `stutterSdMs`, `stutterMinMs`, `stutterMaxMs` — measured, so vs `stimulusMs` shows delivery fidelity |
+| The stutter immediately before this response | `lastSpikeAtSec` (phase clock; the most recent stutter of the phase, whichever round), `sinceLastSpikeSec` (`firedAtSec − lastSpikeAtSec`). Both weapons. On the laser this is "how long after the crossing's stutter did they shoot"; on shockwave it is the raw press-after-stutter interval, defined for early presses too |
+| Outcome | `isHit`, `totalScore`, `outcome` (`shot`/`detected`/`early`/`late`/`timeout`/`expired`), `playerFired`, `countedByStaircase` |
+| Trial timing | `trialStartSec` (the round's starting gun), `spikeAtSec` (the round's most recent stutter: the presentation answered on shockwave, the last crossing on laser), `firedAtSec` (both weapons), `reactionSec` (`firedAtSec − spikeAtSec`, from the stutter's **end**; both weapons — shockwave detections and late presses, laser shots with a crossing this round, hit or miss; add the last `stuttersMs` entry to time it from the stutter's start), `spikeDelaySec` (the wait before the most recent stutter — shockwave: the random delay; laser: from the round start or previous stutter's end to this crossing's stutter), `windowSec` (shockwave only — laser has no response window) |
+| Geometry | `hitX`, `missDistX`, `towerX`, `ufoY`, `side` |
+| Posterior after this response | `threshEstimateMs`, `sd`, `slopeEstimate`, `lapseEstimate` |
+
+`spikeAtSec` vs `lastSpikeAtSec`: the first is scoped to the round, the second to the phase.
+They differ only when a response follows no stutter *this round* — a shockwave early press at
+a round's start, or a laser shot with no crossing behind it — where `spikeAtSec` is empty and
+`lastSpikeAtSec` still names the last one seen. The burst list (`stutterAtSec`) is drained at
+every phase start, so its entries and `spikesSinceLastShot` always agree.
 
 **Any refit of the psychometric function needs `phase = 'main'` AND
-`countedByStaircase = 1`.** Practice rows are logged in full but never reached the posterior.
+`countedByStaircase = 1`.** Practice rows and discarded early fires are logged in full but
+never reached the posterior.
 
-## `PlayerLog_<id>.csv` — one row per rendered frame
+## `PlayerLog_<id>.csv` — one row per rendered frame (39 columns + `cfg_*`)
 
 | Group | Columns |
 |---|---|
-| Phase | `phase`, `phaseStartIso` |
-| Frame | `roundNumber`, `frameIndex`, `timeSinceStartSec`, `unscaledDeltaMs` |
-| Pacing | `targetFps` (the cap that paced THIS frame — the one `unscaledDeltaMs` measures), `pacedBy` (`base` / `altered` / empty between rounds) |
-| Round | `diffFps`, `alteredSide` (both empty between rounds), `side` (the UFO's side of the tower), `crossed` (1 on a crossing frame) |
+| Identity / phase | same first 12 as the shot log |
+| Frame | `roundNumber`, `frameIndex`, `timeSinceStartSec`, `unscaledDeltaMs` (**the stutter shows up here as one long frame**) |
 | Input | `mouseX`, `mouseY`, `mouseDeltaX`, `mouseDeltaY`, `leftButtonDown`, `leftButtonPressed`, `fireKeyDown` |
-| World | `ufoX`, `ufoY`, `towerX` |
-| Shot | `shotFired` (a response was logged — *not* the same as `leftButtonPressed`), `shotHitX` |
-
-The cap is chosen at the end of a frame and paces the next one, so on the single frame after
-a crossing `side` already shows the new side while `targetFps` / `pacedBy` still show the old
-cap.
+| World | `ufoX`, `ufoY`, `towerX`, `side` |
+| Shot | `shotFired` (accepted and scored — *not* the same as `leftButtonPressed`), `shotHitX` |
+| Stimulus state | `stimulusMs`, `spikeFired`, `stutterMs`, `windowOpen` (a press here would have counted) |
+| Live posterior | `threshEstimateMs`, `sd`, `slopeEstimate`, `lapseEstimate` |
+| Running | `accuracy`, `score` |
 
 ---
 
 ## Joining
 
-`Analysis/build_db.py` builds `<sessionId>_<runId>.db` from the three CSVs, hoisting
-everything constant across a `(sessionId, blockIndex, phase)` group into a `block` table and
-exposing `v_session` / `v_shot` / `v_frame` views in the original flat shape. Run
+`Analysis/build_db.py` builds `session_<id>.db` from the three CSVs, hoisting everything
+constant across a `(sessionId, blockIndex, phase)` group into a `block` table and exposing
+`v_session` / `v_shot` / `v_frame` views in the original flat shape. Run
 `python Analysis/build_db.py --schema` for the schema and example queries, including
-delivered-vs-target frame rates per round.
+threshold-by-position and practice-length comparisons.

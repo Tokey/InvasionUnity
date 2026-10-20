@@ -5,54 +5,66 @@ using UnityEngine;
 namespace JndUfo
 {
     /// <summary>
-    /// Grid + priors for the QUEST+ frame-rate-difference staircase, built from one block of
-    /// Data/ExperimentConfig.csv (see StudyConfig).
+    /// Grid + priors for the QUEST+ frame-time-stutter (FT) staircase, read from the study row
+    /// in Data/ExperimentConfig.csv (see StudyConfig — the column names here are unchanged from
+    /// the FrametimeQuestConfig.csv this was merged out of).
     ///
-    /// The stimulus is Δ, the frame-rate difference between the two sides of the tower, in whole
-    /// frames per second. The stimulus grid is minDiffFps, minDiffFps + diffStepFps, … up to
-    /// maxDiffFps — exactly even, and whole numbers because a frame-rate cap is an integer and
-    /// QUEST+ must reason about the stimulus that was actually shown. The threshold grid spans the
-    /// same range unrounded: θ is a parameter of the curve, not something presented.
-    ///
-    /// The slope/lapse grids follow the values used by Fu et al. (2023, PMC10700427), one of the
-    /// few papers that reports concrete QUEST+ grid choices for JND estimation.
+    /// Grid ranges were chosen from the closest published anchor we could find for FT-style
+    /// perturbations: Cauchi et al. (WPI / NVIDIA, ACM I3D 2026, "Impact of Graphical Fidelity
+    /// and Frame-Time Stutter in a First-Person Shooter Game") drove a main-thread stutter of
+    /// 0 / 225 / 675 ms into an FPS game and found 225 ms already "clearly perceptible /
+    /// medium" and 675 ms "just playable". That study used three fixed levels for a manipulation
+    /// check, not an adaptive design, so it doesn't hand us a fine-grained JND — but it does
+    /// bound the useful search space: a real detection threshold for a momentary stutter must sit
+    /// comfortably below their 225 ms "medium" point, and 675 ms is well past anything we'd want
+    /// to probe. That's consistent with this project's own pilot-tuned CSV (10-250 ms), so the
+    /// stimulus/threshold grid below keeps that range rather than importing the WPI numbers
+    /// directly (per instructions: their numbers describe a coarser, differently-shaped
+    /// manipulation check, so they're used only as a sanity bound, not as a seed value).
+    /// The slope/lapse grids follow the values used by Fu et al. (2023, PMC10700427), one of
+    /// the few papers that reports concrete QUEST+ grid choices for JND estimation.
     /// </summary>
     public class QuestPlusConfig
     {
-        public float[] stimGrid;   // candidate Δ values the staircase can present (fps, whole numbers)
-        public float[] threshGrid; // candidate threshold (θ) values in the posterior (fps)
+        public float[] stimGrid;   // candidate stimulus magnitudes the staircase can present (ms)
+        public float[] threshGrid; // candidate threshold (θ) values in the posterior (ms)
         public float[] slopeGrid;  // candidate Weibull slope (β) values
         public float[] lapseGrid;  // candidate lapse-rate (λ) values
 
-        public float guessRate;    // fixed γ: the odds of a hit with no perception at all
+        public float guessRate;    // fixed γ: baseline "I noticed something" rate even near 0ms
         public int   maxTrials;
         public int   minTrials;        // floor before early-stop-by-precision is allowed
-        public float stopPosteriorSD;  // early-stop once posterior SD of θ ≤ this (fps); 0 = disabled
+        public float stopPosteriorSD;  // early-stop once posterior SD of θ ≤ this (ms); 0 = disabled
 
-        public static QuestPlusConfig ForFpsDiff(StudyConfig c)
+        public static QuestPlusConfig FromCsv(Dictionary<string, string> d)
         {
+            float stimMin = CsvConfig.GetFloat(d, "stimMinMs", 5f);
+            float stimMax = CsvConfig.GetFloat(d, "stimMaxMs", 250f);
+            int   stimN   = CsvConfig.GetInt(d, "stimCount", 40);
+
+            float thrMin = CsvConfig.GetFloat(d, "threshMinMs", stimMin);
+            float thrMax = CsvConfig.GetFloat(d, "threshMaxMs", stimMax);
+            int   thrN   = CsvConfig.GetInt(d, "threshCount", 50);
+
+            float slopeMin = CsvConfig.GetFloat(d, "slopeMin", 1f);
+            float slopeMax = CsvConfig.GetFloat(d, "slopeMax", 6f);
+            int   slopeN   = CsvConfig.GetInt(d, "slopeCount", 11);
+
+            float lapseMin = CsvConfig.GetFloat(d, "lapseMin", 0f);
+            float lapseMax = CsvConfig.GetFloat(d, "lapseMax", 0.06f);
+            int   lapseN   = CsvConfig.GetInt(d, "lapseCount", 4);
+
             return new QuestPlusConfig
             {
-                stimGrid   = StepGrid(c.minDiffFps, c.maxDiffFps, c.diffStepFps),
-                threshGrid = Linspace(c.minDiffFps, c.maxDiffFps, c.threshCount),
-                slopeGrid  = Linspace(c.slopeMin, c.slopeMax, c.slopeCount),
-                lapseGrid  = Linspace(c.lapseMin, c.lapseMax, c.lapseCount),
-                guessRate  = c.guessRate,
-                maxTrials  = c.maxTrials,
-                minTrials  = c.minTrials,
-                stopPosteriorSD = c.stopSD,
+                stimGrid   = Linspace(stimMin, stimMax, stimN),
+                threshGrid = Linspace(thrMin, thrMax, thrN),
+                slopeGrid  = Linspace(slopeMin, slopeMax, slopeN),
+                lapseGrid  = Linspace(lapseMin, lapseMax, lapseN),
+                guessRate  = CsvConfig.GetFloat(d, "guessRate", 0.05f),
+                maxTrials  = CsvConfig.GetInt(d, "maxTrials", 50),
+                minTrials  = CsvConfig.GetInt(d, "minTrials", 8),
+                stopPosteriorSD = CsvConfig.GetFloat(d, "stopSD", 4f),
             };
-        }
-
-        /// <summary><paramref name="lo"/>, lo + step, lo + 2·step, … while ≤ <paramref name="hi"/>.
-        /// StudyConfig already pulls hi onto the grid, so in practice hi is the last value.</summary>
-        static float[] StepGrid(int lo, int hi, int step)
-        {
-            if (hi < lo) { int t = lo; lo = hi; hi = t; }
-            step = Mathf.Max(1, step);
-            var grid = new List<float>((hi - lo) / step + 1);
-            for (int v = lo; v <= hi; v += step) grid.Add(v);
-            return grid.ToArray();
         }
 
         static float[] Linspace(float lo, float hi, int n)
@@ -67,28 +79,31 @@ namespace JndUfo
     }
 
     /// <summary>
-    /// QUEST+ (Watson, 2017) Bayesian adaptive staircase for the frame-rate JND: picks the next
-    /// frame-rate difference Δ (fps) to present and updates its belief about the participant's
-    /// threshold after each response.
+    /// QUEST+ (Watson, 2017) Bayesian adaptive staircase for the frame-time-stutter (FT) test
+    /// mode: picks the next stutter size (ms) to try and updates its belief about the player's
+    /// threshold after each shot.
     ///
-    /// What "isHit" means here: one side of the hidden tower runs at the base frame rate and the
-    /// other at base ∓ Δ, and the participant shoots where they think the boundary is. isHit ==
-    /// true means the shot landed on the tower — they could feel where the frame rate changed.
-    /// isHit == false means it missed, or the round ran out. So "hit" and "noticed" are the same
-    /// thing throughout this class; there is no separate detection question layered on top of the
-    /// shot. See GameManager.ResolveTrial for where isHit is computed.
+    /// What "isHit" means here: the FT spike fires once when the UFO crosses the tower, then
+    /// the player takes a shot at the (hidden) tower. isHit == true means the shot landed, i.e.
+    /// the player knew where the tower was despite the spike — they noticed it. isHit == false
+    /// means the shot missed — they didn't notice it and got thrown off blind. So "hit" and
+    /// "noticed" are the same thing throughout this class; there's no separate detection
+    /// question layered on top of the shot. See GameManager.HandleShotFired for where isHit is
+    /// computed.
     ///
     /// How the guessing works: this keeps a probability table over every combination of three
-    /// unknowns — threshold θ (the JND we're solving for), slope β (how sharply P(notice) ramps up
-    /// once you're past θ), and lapse λ (how often the participant misses for reasons that have
-    /// nothing to do with Δ, even at huge differences). Notice probability at a difference x is:
+    /// unknowns — threshold θ (the JND we're solving for), slope β (how sharply P(notice) ramps
+    /// up once you're past θ), and lapse λ (how often the player fails to notice for reasons
+    /// that have nothing to do with the stutter, even at huge stutter sizes). Notice probability
+    /// at a given stutter size x is:
     ///
     ///   P(notice | x; θ, β, λ) = γ + (1 - γ - λ) * (1 - exp(-(x/θ)^β))
     ///
-    /// (γ = chance: a blind shot landing on the tower anyway). θ sits at the ~63% point of that
-    /// curve, not counting lucky guesses. Each trial, QUEST+ presents the Δ that would narrow this
-    /// table down the most no matter how the participant responds, then shrinks the table after
-    /// they do. The reported JND is the table's current best guess for θ.
+    /// (γ = baseline false-alarm rate — noticing "something" even at ~0ms). θ sits at the ~63%
+    /// point of that curve: the stutter size the player notices about 2 times out of 3. Each
+    /// trial, QUEST+ tries the stutter size that would narrow this table down the most no matter
+    /// how the player responds, then shrinks the table after they do. The reported JND is the
+    /// table's current best guess for θ.
     /// </summary>
     public class QuestPlusStaircase : IJndStaircase
     {
@@ -99,7 +114,7 @@ namespace JndUfo
         public int   Streak       { get; private set; } // consecutive hits, cosmetic only
         public int   BestStreak   { get; private set; }
 
-        /// <summary>SD of the θ marginal (fps) before any response — the uniform prior's. The
+        /// <summary>SD of the θ marginal (ms) before any response — the uniform prior's. The
         /// precision stop rule is a journey from here to stopPosteriorSD, which is what the HUD's
         /// progress bar measures (see RoundProgress).</summary>
         public float PriorThresholdSD { get; }
@@ -158,7 +173,7 @@ namespace JndUfo
             return guess + (1.0 - guess - lapse) * w;
         }
 
-        /// <summary>isHit == true means the participant noticed the difference (see class doc).</summary>
+        /// <summary>isHit == true means the player noticed the stutter (see class doc).</summary>
         public float RecordResponse(bool isHit)
         {
             if (IsFinished) return CurrentValue;
@@ -178,6 +193,9 @@ namespace JndUfo
             }
             if (norm > 0.0)
                 for (int p = 0; p < _nParams; p++) _posterior[p] /= norm;
+
+            Debug.Log($"[QuestPlus] Trial={TrialCount} Noticed={isHit} Stim={CurrentValue:0.0}ms " +
+                      $"θ̂={JndEstimate():0.00} SD={PosteriorSD(ThresholdMarginal()):0.00} Streak={Streak}");
 
             CurrentValue = IsFinished ? CurrentValue : SelectNextStimulus();
             return CurrentValue;
@@ -289,14 +307,14 @@ namespace JndUfo
             return (float)mean;
         }
 
-        /// <summary>Posterior mean of θ — the JND estimate (fps).</summary>
+        /// <summary>Posterior mean of θ — the JND estimate (ms).</summary>
         public float JndEstimate() => PosteriorMeanFrom(ThresholdMarginal());
 
-        /// <summary>Standard deviation of the θ posterior (fps) — shrinks as evidence accumulates.</summary>
+        /// <summary>Standard deviation of the θ posterior (ms) — shrinks as evidence accumulates.</summary>
         public float PosteriorThresholdSD() => PosteriorSD(ThresholdMarginal());
 
         /// <summary>
-        /// A quantile of the θ posterior (fps), <paramref name="p"/> in 0–1.
+        /// A quantile of the θ posterior (ms), <paramref name="p"/> in 0–1.
         ///
         /// Why this exists alongside the SD: the θ posterior is a distribution over a bounded
         /// grid, and near the ends of that grid it is skewed — the mean ± 2 SD can sit outside
@@ -305,8 +323,8 @@ namespace JndUfo
         /// the SD of a skewed posterior is the wrong one.
         ///
         /// Interpolated between grid points rather than snapped to one, so the answer does not
-        /// quantise to the threshold grid — with stopSD close to the grid spacing, snapping would
-        /// be a visible part of the reported width.
+        /// quantise to the 60-point threshold grid — with stopSD at 5 ms and grid steps around
+        /// 4 ms, snapping would be a visible part of the reported width.
         ///
         /// Called once per block, from the session-row write, so the full pass over the grid
         /// costs nothing that matters.
@@ -334,25 +352,6 @@ namespace JndUfo
                 cum = next;
             }
             return Config.threshGrid[_nThresh - 1];
-        }
-
-        /// <summary>
-        /// Whether the θ posterior is pressed against an end of its grid: "top" when its 97.5%
-        /// quantile reaches into the grid's last cell, "bottom" when its 2.5% quantile reaches into
-        /// the first, otherwise empty.
-        ///
-        /// The stop rule cannot tell these apart from a real estimate. A participant who never
-        /// locates the boundary piles the posterior against the largest Δ, its SD collapses there,
-        /// and the run "converges" in under twenty trials — on a number that only says the
-        /// threshold is somewhere above the tested range. This is the flag that says so.
-        /// </summary>
-        public string RangeEdge()
-        {
-            float[] g = Config.threshGrid;
-            if (g == null || g.Length < 3) return "";
-            if (ThresholdQuantile(0.975f) >= g[g.Length - 2]) return "top";
-            if (ThresholdQuantile(0.025f) <= g[1])            return "bottom";
-            return "";
         }
 
         /// <summary>
